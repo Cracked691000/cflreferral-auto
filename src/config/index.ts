@@ -1,5 +1,6 @@
 import { logger } from "../utils/logger"
 import * as path from "path"
+import * as dotenv from "dotenv"
 
 export interface Config {
   // Email and password for Levelinf account
@@ -24,6 +25,7 @@ export interface Config {
 
   // Security configuration
   enableClientCertificates: boolean
+  enableSecureConnection: boolean
   privateKeyPath?: string
   certificatePath?: string
   caCertificatePath?: string
@@ -97,6 +99,7 @@ export const defaultConfig: Config = {
 
   // Security configuration
   enableClientCertificates: false,
+  enableSecureConnection: false,
   allowedNetworks: ["0.0.0.0/0"],
   blockedNetworks: [],
 
@@ -134,12 +137,15 @@ export const defaultConfig: Config = {
   // Bot settings
   headless: false, // Set to true for production
   levelinfBaseUrl: "https://act.playcfl.com/act/a20251031rlr/index.html?code=",
-  referralCode: "abbqzbq",
+  referralCode: process.env.REFERRAL_CODE || "abbqzbq",
   navigationTimeout: 60000,
 }
 
 // Load configuration with validation
 export function loadConfig(): Config {
+  // Load environment variables from .env file
+  dotenv.config()
+
   const config = { ...defaultConfig }
 
   // Resolve file paths from project root

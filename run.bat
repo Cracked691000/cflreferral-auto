@@ -1,20 +1,27 @@
 @echo off
 echo ====================================
-echo Crossfire Referral Bot
+echo Crossfire Legends Referral Bot Setup
 echo ====================================
-echo Setting up credentials...
+echo Installing dependencies...
 echo.
 
-REM IMPORTANT: Replace with your actual Levelinf password
-set LEVELINF_PASSWORD=YOUR_ACTUAL_LEVELINF_PASSWORD_HERE
+npm install
 
-echo Email: %LEVELINF_EMAIL%
-echo Password: [HIDDEN]
 echo.
+echo ====================================
+echo Building project...
+echo.
+
+npm run build
+
+echo.
+echo ====================================
 echo Starting automation...
+echo Bot will automatically generate temp email
+echo No credentials needed!
 echo.
 
-npx ts-node src/index.ts
+npm run dev
 
 echo.
 echo ====================================

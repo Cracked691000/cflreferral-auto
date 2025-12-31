@@ -194,20 +194,24 @@ export class CrossfireReferralBot {
     })
 
     // Initialize secure connection manager for ALL connections (direct or proxy)
-    this.secureConnectionManager = new SecureConnectionManager({
-      enableCertificatePinning: true,
-      enableClientCertificates: this.config.enableClientCertificates,
-      allowedNetworks: this.config.allowedNetworks,
-      blockedNetworks: this.config.blockedNetworks,
-      tlsFingerprintCheck: true,
-      maxTlsVersion: "TLSv1.3",
-      minTlsVersion: "TLSv1.2"
-    })
+    if (this.config.enableSecureConnection) {
+      this.secureConnectionManager = new SecureConnectionManager({
+        enableCertificatePinning: true,
+        enableClientCertificates: this.config.enableClientCertificates,
+        allowedNetworks: this.config.allowedNetworks,
+        blockedNetworks: this.config.blockedNetworks,
+        tlsFingerprintCheck: true,
+        maxTlsVersion: "TLSv1.3",
+        minTlsVersion: "TLSv1.2"
+      })
 
-    logger.info("🔐 Secure connection manager initialized for all connections")
+      logger.info("🔐 Secure connection manager initialized for all connections")
+    } else {
+      logger.info("ℹ️  Secure connection manager disabled")
+    }
 
     // Perform security audit for direct connections (no proxy)
-    if (this.config.useProxy === 0) {
+    if (this.config.useProxy === 0 && this.config.enableSecureConnection) {
       this.performDirectConnectionSecurityAudit()
     }
 

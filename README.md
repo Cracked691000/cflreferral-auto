@@ -1,8 +1,8 @@
-# Crossfire Referral Bot
+# Crossfire Legends Referral Bot
 
-Automated Crossfire account registration with email verification.
+Automated Crossfire Legends account registration with email verification.
 
-[![](https://img.shields.io/badge/version-1.0.0-blue.svg)](https://github.com/mra1k3r0/cfreferral-auto/releases)
+[![](https://img.shields.io/badge/version-1.0.0-blue.svg)](https://github.com/mra1k3r0/cflreferral-auto/releases)
 
 ## Table of Contents
 
@@ -20,8 +20,7 @@ Automated Crossfire account registration with email verification.
 <summary><strong>Windows</strong></summary>
 
 #### Method 1: Batch File (Easiest)
-1. Edit `run.bat` with your credentials
-2. Double-click `run.bat`
+1. Double-click `run.bat` (handles everything automatically)
 
 #### Method 2: Command Line
 ```bash
@@ -50,8 +49,8 @@ pkg install nodejs git chromium x11-repo
 pkg install termux-x11-nightly
 
 # Clone and setup project
-git clone https://github.com/mra1k3r0/cfreferral-auto.git
-cd cfreferral-auto
+git clone https://github.com/mra1k3r0/cflreferral-auto.git
+cd cflreferral-auto
 npm install
 npm run build
 
@@ -71,16 +70,25 @@ Edit `src/config/index.ts`:
 ```typescript
 useProxy: 5,        // 0=direct, 1=HTTP, 2=HTTPS, 3=SOCKS4, 4=SOCKS5, 5=stable
 proxyFile: "proxy.txt"  // Your proxy list
+enableSecureConnection: false,  // Enable/disable secure connection manager
 ```
 
 ### Optional Configuration
 
 The bot automatically generates temporary emails for registration. If you prefer to use your own credentials:
 
-#### Environment Variables
+#### Using .env File (Optional)
+Create a `.env` file in the project root:
 ```bash
-export LEVELINF_EMAIL="your-email@levelinf.com"
-export LEVELINF_PASSWORD="your-password"
+# Copy and modify this content:
+REFERRAL_CODE=your-referral-code
+```
+
+**Note**: The bot automatically generates temp emails. Only create `.env` if you want to use a custom referral code. The `.env` file is automatically ignored by Git for security.
+
+### Or Environment Variables
+```bash
+export REFERRAL_CODE="your-referral-code"
 ```
 
 ## Output Files
@@ -109,3 +117,7 @@ The bot uses **Puppeteer Core** and automatically detects and configures:
 ## Disclaimer
 
 Educational purposes only. Use responsibly.
+
+## License
+
+This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.

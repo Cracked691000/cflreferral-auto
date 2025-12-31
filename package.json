@@ -1,7 +1,7 @@
 {
-  "name": "cfreferral-auto",
+  "name": "cflreferral-auto",
   "version": "1.0.0",
-  "description": "Crossfire referral automation using Puppeteer Core",
+  "description": "Crossfire Legends referral automation using Puppeteer Core",
   "main": "dist/index.js",
   "scripts": {
     "build": "tsc",
@@ -10,6 +10,7 @@
   },
   "dependencies": {
     "axios": "^1.6.0",
+    "dotenv": "^16.3.1",
     "puppeteer-core": "^24.15.0",
     "puppeteer-extra": "^3.3.6",
     "puppeteer-extra-plugin-stealth": "^2.11.2",
@@ -26,8 +27,14 @@
     "automation",
     "referral",
     "termux",
-    "android"
+    "android",
+    "dotenv"
   ],
-  "author": "",
-  "license": "ISC"
+  "author": "mra1k3r0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/mra1k3r0/cflreferral-auto.git"
+  },
+  "homepage": "https://github.com/mra1k3r0/cflreferral-auto#readme",
+  "license": "MIT"
 }
