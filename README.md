@@ -1,0 +1,111 @@
+# Crossfire Referral Bot
+
+Automated Crossfire account registration with email verification.
+
+[![](https://img.shields.io/badge/version-1.0.0-blue.svg)](https://github.com/mra1k3r0/cfreferral-auto/releases)
+
+## Table of Contents
+
+- [Windows](#windows)
+- [Linux/Mac](#linuxmac)
+- [Android (Termux + Termux-X11)](#android-termux--termux-x11)
+- [Configuration](#configuration)
+- [Output Files](#output-files)
+- [Requirements](#requirements)
+- [Supported Browsers](#supported-browsers)
+
+## Quick Start
+
+<details>
+<summary><strong>Windows</strong></summary>
+
+#### Method 1: Batch File (Easiest)
+1. Edit `run.bat` with your credentials
+2. Double-click `run.bat`
+
+#### Method 2: Command Line
+```bash
+npm install
+npm run build
+npm run dev
+```
+</details>
+
+<details>
+<summary><strong>Linux/Mac</strong></summary>
+
+```bash
+npm install
+npm run build
+npm run dev
+```
+</details>
+
+<details>
+<summary><strong>Android (Termux + Termux-X11)</strong></summary>
+
+```bash
+# Install required packages (bot auto-detects Chromium)
+pkg install nodejs git chromium x11-repo
+pkg install termux-x11-nightly
+
+# Clone and setup project
+git clone https://github.com/mra1k3r0/cfreferral-auto.git
+cd cfreferral-auto
+npm install
+npm run build
+
+# Start X11 server in background
+termux-x11 :0 &
+
+# Run bot with X11 display (auto-detects browser)
+export DISPLAY=:0
+npm run dev
+```
+</details>
+
+## Configuration
+
+### Proxy Settings
+Edit `src/config/index.ts`:
+```typescript
+useProxy: 5,        // 0=direct, 1=HTTP, 2=HTTPS, 3=SOCKS4, 4=SOCKS5, 5=stable
+proxyFile: "proxy.txt"  // Your proxy list
+```
+
+### Optional Configuration
+
+The bot automatically generates temporary emails for registration. If you prefer to use your own credentials:
+
+#### Environment Variables
+```bash
+export LEVELINF_EMAIL="your-email@levelinf.com"
+export LEVELINF_PASSWORD="your-password"
+```
+
+## Output Files
+
+- `valid.txt` - Successfully created accounts
+- `logs/bot.log` - Execution logs
+- Screenshots automatically saved on errors
+
+## Requirements
+
+- Node.js 16+
+- npm
+- **Browser**: Chromium/Chrome/Firefox (auto-detected)
+- For Android: Termux + Termux-X11 (optional)
+
+## Supported Browsers
+
+The bot uses **Puppeteer Core** and automatically detects and configures:
+- **Chromium** (recommended for Termux/Android)
+- **Google Chrome** (Windows/macOS/Linux)
+- **Firefox**
+- Other compatible browsers
+
+**Note**: Puppeteer Core requires a system-installed browser and automatically configures the executable path.
+
+## Disclaimer
+
+Educational purposes only. Use responsibly.
