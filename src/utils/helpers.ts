@@ -3,7 +3,8 @@ import * as path from "path"
 import { logger } from "./logger"
 
 /**
- * Generate human-like usernames for email registration
+ * Generates human-like username for email registration
+ * @returns Random username in format: firstName_randomSuffix
  */
 export function generateHumanUsername(): string {
   const firstNames = [
@@ -34,8 +35,7 @@ export function generateHumanUsername(): string {
   ]
 
   const firstName = firstNames[Math.floor(Math.random() * firstNames.length)]
-
-  const suffixLength = Math.floor(Math.random() * 3) + 3 // 3-5 characters
+  const suffixLength = Math.floor(Math.random() * 3) + 3
   let suffix = ""
   const chars = "abcdefghijklmnopqrstuvwxyz0123456789"
 
@@ -47,16 +47,16 @@ export function generateHumanUsername(): string {
 }
 
 /**
- * Generate secure random password
+ * Generates secure random password with mixed characters
+ * @returns Password string (8-10 characters) with uppercase, lowercase, numbers, and symbols
  */
 export function generateSecurePassword(): string {
-  const length = Math.floor(Math.random() * 3) + 8 // 8-10 characters
+  const length = Math.floor(Math.random() * 3) + 8
   const uppercase = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
   const lowercase = "abcdefghijklmnopqrstuvwxyz"
   const numbers = "0123456789"
   const symbols = "!@#$%^&*()_+-=[]{}|;:,.<>?"
 
-  // Ensure at least one character from each category
   const password = [
     uppercase[Math.floor(Math.random() * uppercase.length)],
     lowercase[Math.floor(Math.random() * lowercase.length)],
@@ -64,13 +64,11 @@ export function generateSecurePassword(): string {
     symbols[Math.floor(Math.random() * symbols.length)],
   ]
 
-  // Fill the rest randomly
   const allChars = uppercase + lowercase + numbers + symbols
   for (let i = 4; i < length; i++) {
     password.push(allChars[Math.floor(Math.random() * allChars.length)])
   }
 
-  // Shuffle the password array
   for (let i = password.length - 1; i > 0; i--) {
     const j = Math.floor(Math.random() * (i + 1))
     ;[password[i], password[j]] = [password[j], password[i]]
@@ -80,7 +78,9 @@ export function generateSecurePassword(): string {
 }
 
 /**
- * Save successful account to valid.txt
+ * Saves successful account credentials to valid.txt
+ * @param email - Account email address
+ * @param password - Account password
  */
 export function saveSuccessfulAccount(email: string, password: string): void {
   const validFilePath = path.join(process.cwd(), "valid.txt")
@@ -94,7 +94,7 @@ export function saveSuccessfulAccount(email: string, password: string): void {
     const existingContent = fs.readFileSync(validFilePath, "utf-8")
 
     if (existingContent.includes(`${email}|`)) {
-      console.log(`ℹ️  Account ${email} already exists in valid.txt`)
+      logger.info(`ℹ️  Account ${email} already exists in valid.txt`)
       return
     }
 
@@ -106,14 +106,17 @@ export function saveSuccessfulAccount(email: string, password: string): void {
 }
 
 /**
- * Delay utility with optional logging
+ * Creates a delay promise
+ * @param ms - Milliseconds to delay
  */
 export function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms))
 }
 
 /**
- * Random delay between min and max milliseconds
+ * Creates a random delay between min and max milliseconds
+ * @param min - Minimum delay in milliseconds
+ * @param max - Maximum delay in milliseconds
  */
 export function randomDelay(min: number, max: number): Promise<void> {
   const ms = Math.floor(Math.random() * (max - min + 1)) + min

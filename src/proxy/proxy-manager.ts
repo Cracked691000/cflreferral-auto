@@ -1,3 +1,8 @@
+/**
+ * ProxyManager - Manages proxy loading, testing, and selection
+ * Supports HTTP, HTTPS, SOCKS4, and SOCKS5 proxies from files or URLs
+ */
+
 import * as fs from "fs"
 import * as path from "path"
 import * as net from "net"
@@ -9,6 +14,7 @@ import type { ProxyInfo, ProxyManagerOptions } from "../types"
 
 export class ProxyManager {
   private proxies: ProxyInfo[] = []
+  private fileProxies: ProxyInfo[] = []
   private bestProxy: ProxyInfo | null = null
   private currentProxy: ProxyInfo | null = null
   private proxySwitchFailures = 0
@@ -40,18 +46,23 @@ export class ProxyManager {
       ],
       ...options,
     }
+    logger.debug(`ProxyManager constructor called with proxyType: ${this.options.proxyType}, proxyFile: ${this.options.proxyFile}`)
     this.loadProxies()
   }
 
   private async loadProxies(): Promise<void> {
+    logger.debug(`loadProxies() called with proxyType: ${this.options.proxyType}`)
     const allProxies: ProxyInfo[] = []
 
     if (this.options.proxyType === 1 || this.options.proxyType === 2) {
+      logger.debug(`Loading HTTP/HTTPS proxies from file: ${this.options.proxyFile}`)
       if (this.options.proxyFile) {
         const fileProxies = this.loadProxiesFromFile(this.options.proxyType === 2 ? "https" : "http")
+        this.fileProxies = fileProxies
         allProxies.push(...fileProxies)
       }
     } else if (this.options.proxyType === 3) {
+      logger.debug(`Loading SOCKS4 proxies from URLs`)
       if (this.options.socks4Urls && this.options.socks4Urls.length > 0) {
         for (const url of this.options.socks4Urls) {
           const socks4Proxies = await this.loadProxiesFromUrl(url, "socks4")
@@ -59,20 +70,32 @@ export class ProxyManager {
         }
       }
     } else if (this.options.proxyType === 4) {
-      if (this.options.socks5Urls && this.options.socks5Urls.length > 0) {
+      logger.debug(`Loading SOCKS5 proxies (prioritizing file: ${this.options.proxyFile})`)
+      // Load SOCKS5 proxies from file if provided (prioritize file proxies)
+      if (this.options.proxyFile) {
+        const fileProxies = this.loadProxiesFromFile("socks5")
+        this.fileProxies = fileProxies
+        allProxies.push(...fileProxies)
+        logger.debug(`Loaded ${fileProxies.length} SOCKS5 proxies from file`)
+      }
+      // Only load from URLs if no file proxies were found
+      if (allProxies.length === 0 && this.options.socks5Urls && this.options.socks5Urls.length > 0) {
+        logger.debug("No proxies found in file, fetching from GitHub...")
         for (const url of this.options.socks5Urls) {
           const socks5Proxies = await this.loadProxiesFromUrl(url, "socks5")
           allProxies.push(...socks5Proxies)
         }
+      } else if (allProxies.length > 0) {
+        logger.debug(`Using ${allProxies.length} proxy/proxies from file - skipping GitHub proxies`)
       }
     }
 
     this.proxies = allProxies
     const proxyTypeName = this.getProxyTypeName(this.options.proxyType)
-    logger.debug(`Loaded ${this.proxies.length} ${proxyTypeName} proxies`)
+    logger.debug(`Total loaded ${this.proxies.length} ${proxyTypeName} proxies`)
   }
 
-  private loadProxiesFromFile(protocol: "http" | "https" = "http"): ProxyInfo[] {
+  private loadProxiesFromFile(protocol: "http" | "https" | "socks4" | "socks5" = "http"): ProxyInfo[] {
     const proxies: ProxyInfo[] = []
     try {
       // proxyFile path is already resolved from project root in config
@@ -92,7 +115,8 @@ export class ProxyManager {
         }
       }
 
-      logger.info(`Loaded ${proxies.length} ${protocol.toUpperCase()} proxies from file: ${filePath}`)
+      logger.info(`Using Proxy: True, loaded ${proxies.length} proxy/proxies from proxy.txt (${protocol.toUpperCase()})`)
+      logger.debug(`Loaded ${proxies.length} ${protocol.toUpperCase()} proxies from file: ${filePath}`)
     } catch (error) {
       logger.error(`Error loading proxies from file: ${error}`)
     }
@@ -112,7 +136,7 @@ export class ProxyManager {
   private async loadProxiesFromUrl(url: string, protocol: "socks5" | "socks4"): Promise<ProxyInfo[]> {
     const proxies: ProxyInfo[] = []
     try {
-      logger.info(`Fetching ${protocol.toUpperCase()} proxies from: ${url}`)
+      logger.debug(`Fetching ${protocol.toUpperCase()} proxies from: ${url}`)
       const response = await axios.get(url, { timeout: 10000 })
       const lines = response.data.split("\n").filter((line: string) => line.trim())
 
@@ -123,7 +147,7 @@ export class ProxyManager {
         }
       }
 
-      logger.info(`Loaded ${proxies.length} ${protocol.toUpperCase()} proxies from URL`)
+      logger.debug(`Loaded ${proxies.length} ${protocol.toUpperCase()} proxies from URL`)
     } catch (error) {
       logger.error(`Error loading ${protocol} proxies from URL ${url}: ${error}`)
     }
@@ -139,7 +163,8 @@ export class ProxyManager {
       parts = [url.hostname, url.port]
     } else {
       parts = proxyString.split(":")
-      if (parts.length !== 2) return null
+      // Support both 2-part (host:port) and 4-part (host:port:username:password) formats
+      if (parts.length !== 2 && parts.length !== 4) return null
     }
 
     const host = parts[0]
@@ -147,11 +172,27 @@ export class ProxyManager {
 
     if (!host || isNaN(port) || port < 1 || port > 65535) return null
 
-    return { host, port, protocol }
+    // Extract username and password if present (4-part format)
+    const username = parts.length === 4 ? parts[2] : undefined
+    const password = parts.length === 4 ? parts[3] : undefined
+
+    return { host, port, protocol, username, password }
   }
 
+  /**
+   * Tests proxy connectivity and response time
+   * @param proxy - Proxy to test
+   * @returns Response time in milliseconds, or -1 if proxy failed
+   */
   private async pingProxy(proxy: ProxyInfo): Promise<number> {
+    // Skip testing for residential proxies as they may not respond to automated tests
+    if (proxy.host.includes('scrapeops') || proxy.host.includes('residential-proxy')) {
+      logger.debug(`Skipping proxy test for residential proxy: ${proxy.host}:${proxy.port}`)
+      return 1000 // Return a fake good response time
+    }
+
     const startTime = Date.now()
+    let lastError: any = null
 
     try {
       let axiosInstance: any
@@ -174,67 +215,164 @@ export class ProxyManager {
           },
         })
       } else {
-        axiosInstance = axios.create({
-          proxy: {
+        // For HTTP proxies with authentication, create proxy URL
+        let axiosConfig: any = {
+          timeout: this.options.testTimeout,
+        }
+
+        if (proxy.username && proxy.password) {
+          // Use https-proxy-agent for authenticated HTTP proxies
+          const HttpsProxyAgent = require('https-proxy-agent')
+          const proxyUrl = `${proxy.protocol}://${proxy.username}:${proxy.password}@${proxy.host}:${proxy.port}`
+          axiosConfig.httpsAgent = new HttpsProxyAgent.HttpsProxyAgent(proxyUrl)
+          axiosConfig.httpAgent = new HttpsProxyAgent.HttpsProxyAgent(proxyUrl)
+        } else {
+          // For non-authenticated proxies, use axios proxy config
+          axiosConfig.proxy = {
             host: proxy.host,
             port: proxy.port,
             protocol: proxy.protocol,
-          },
-          timeout: this.options.testTimeout,
+          }
+        }
+
+        axiosInstance = axios.create({
+          ...axiosConfig,
           headers: {
-            "User-Agent":
-              "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-            Accept: "application/json, text/plain, */*",
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
             "Accept-Language": "en-US,en;q=0.9",
-            "Cache-Control": "no-cache",
-            Pragma: "no-cache",
+            "Accept-Encoding": "gzip, deflate, br",
+            Connection: "keep-alive",
+            "Upgrade-Insecure-Requests": "1",
           },
-          httpsAgent:
-            proxy.protocol === "https"
-              ? new https.Agent({
-                  rejectUnauthorized: false,
-                })
-              : undefined,
         })
       }
 
-      const testUrl = "http://httpbin.org/ip"
-      const response = await axiosInstance.get(testUrl)
+      // Try multiple test URLs in case one is blocked
+      const testUrls = [
+        "https://api.ipify.org?format=json",
+        "http://httpbin.org/ip",
+        "https://ifconfig.me/ip",
+        "https://icanhazip.com",
+      ]
+      for (const testUrl of testUrls) {
+        try {
+          const response = await axiosInstance.get(testUrl, {
+            timeout: this.options.testTimeout,
+            validateStatus: () => true, // Accept any status code
+          })
       const responseTime = Date.now() - startTime
 
-      if (response.status === 200 && response.data) {
+          // If we get any HTTP response (even 400/403), the proxy connected successfully
+          // 400/403 means proxy works but test URL rejected - proxy might still work for target site
+          if (response.status >= 200 && response.status < 500) {
+            if (response.status === 200) {
+              logger.debug(`${proxy.host}:${proxy.port} test successful (200 OK)`)
+            } else {
+              logger.debug(`${proxy.host}:${proxy.port} test returned ${response.status} (proxy connected, but test URL rejected)`)
+            }
+            return responseTime
+          }
+        } catch (testError: any) {
+          // Check if it's a connection error (proxy doesn't work) vs HTTP error (proxy works but request failed)
+          if (testError.code && (testError.code.includes('ECONN') || testError.code.includes('ETIMEDOUT') || testError.code.includes('ENOTFOUND'))) {
+            // Connection error - proxy doesn't work
+            lastError = testError
+            continue
+          } else if (testError.response && testError.response.status < 500) {
+            // Got HTTP response (even 400/403) - proxy is working!
+            const responseTime = Date.now() - startTime
+            logger.debug(`${proxy.host}:${proxy.port} test returned ${testError.response.status} (proxy connected)`)
         return responseTime
+          }
+          lastError = testError
+        }
+      }
+      
+      // If all URLs failed with connection errors, log the last error
+      if (lastError) {
+        const errorMsg = lastError.code || lastError.message || "Unknown error"
+        // Only log as warning if it's not a connection error (might still work)
+        if (errorMsg.includes('ERR_BAD_REQUEST') || errorMsg.includes('400')) {
+          logger.debug(`${proxy.host}:${proxy.port} test returned 400 (proxy may still work)`)
+        } else {
+          logger.warn(`${proxy.host}:${proxy.port} failed with ${proxy.protocol}: ${errorMsg}`)
+        }
       }
     } catch (error: any) {
       const errorMsg = error.code || error.message || "Unknown error"
       logger.warn(`${proxy.host}:${proxy.port} failed with ${proxy.protocol}: ${errorMsg}`)
+      lastError = error
+    }
+
+    // For ERR_BAD_REQUEST, proxy might still work (test URL rejected but proxy connected)
+    // Return a slow response time so it's tried but not prioritized
+    if (lastError && (lastError.code === 'ERR_BAD_REQUEST' || lastError.message?.includes('400'))) {
+      logger.debug(`Proxy ${proxy.host}:${proxy.port} test returned 400, but proxy may still work`)
+      return 5000 // Return slow time so it's tried but not prioritized
     }
 
     logger.error(`Proxy ${proxy.host}:${proxy.port} failed ${proxy.protocol} test`)
     return -1
   }
 
+  /**
+   * Tests proxies and selects the fastest working one
+   * Prioritizes file proxies over URL proxies
+   */
   private async findBestProxy(): Promise<void> {
     if (this.proxies.length === 0) return
 
+    // Show loading animation while testing proxies
+    const loadingChars = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
+    let loadingIndex = 0
+
+    logger.info("Checking best proxy...")
     logger.debug("Testing proxies for speed...")
 
+    // Prioritize file proxies - test them first before GitHub proxies
+    const fileProxyKeys = new Set(this.fileProxies.map(p => `${p.host}:${p.port}`))
+    const urlProxies = this.proxies.filter(p => !fileProxyKeys.has(`${p.host}:${p.port}`))
     const testProxies = []
-    const shuffled = [...this.proxies].sort(() => 0.5 - Math.random())
-    const testCount = Math.min(this.options.testCount, this.proxies.length)
 
-    for (let i = 0; i < testCount; i++) {
+    // Test file proxies first (all of them, or up to testCount)
+    if (this.fileProxies.length > 0) {
+      const fileTestCount = Math.min(this.options.testCount, this.fileProxies.length)
+      for (let i = 0; i < fileTestCount; i++) {
+        testProxies.push(this.fileProxies[i])
+      }
+      logger.debug(`Prioritizing ${fileTestCount} file proxy/proxies`)
+    }
+    
+    // Only test URL proxies if we haven't reached testCount limit
+    if (testProxies.length < this.options.testCount && urlProxies.length > 0) {
+      const shuffled = [...urlProxies].sort(() => 0.5 - Math.random())
+      const remainingCount = Math.min(this.options.testCount - testProxies.length, urlProxies.length)
+      for (let i = 0; i < remainingCount; i++) {
       testProxies.push(shuffled[i])
+      }
     }
 
-    logger.debug(`Testing ${testCount} proxies for speed`)
+    logger.debug(`Testing ${testProxies.length} proxies for speed (prioritizing file proxies)`)
+
+    // Start loading animation
+    const loadingInterval = setInterval(() => {
+      process.stdout.write(`\r${loadingChars[loadingIndex]} Testing proxies... (${testProxies.length} total)`)
+      loadingIndex = (loadingIndex + 1) % loadingChars.length
+    }, 100)
 
     const results = []
+    try {
     for (const proxy of testProxies) {
       const responseTime = await this.pingProxy(proxy)
       if (responseTime > 0) {
         results.push({ ...proxy, responseTime })
       }
+      }
+    } finally {
+      // Clear loading animation
+      clearInterval(loadingInterval)
+      process.stdout.write('\r\x1b[K') // Clear the line
     }
 
     if (results.length > 0) {
@@ -259,14 +397,16 @@ export class ProxyManager {
     }
 
     if (this.bestProxy) {
-      logger.info(`Using best proxy: ${this.bestProxy.host}:${this.bestProxy.port}`)
+      logger.debug(`Using best proxy: ${this.bestProxy.host}:${this.bestProxy.port}`)
       this.currentProxy = this.bestProxy
       return this.bestProxy
     }
 
-    logger.warn("Using fallback proxy (testing failed)")
-    const fallback = this.proxies[0]
-    logger.info(`Using fallback proxy: ${fallback.host}:${fallback.port}`)
+    // If no proxy passed testing, use first file proxy if available, otherwise first proxy
+    const fallback = this.fileProxies.length > 0 ? this.fileProxies[0] : this.proxies[0]
+    logger.warn(`Using fallback proxy (testing failed): ${fallback.host}:${fallback.port}`)
+    logger.warn(`   Note: Free proxies from public lists are often unreliable.`)
+    logger.warn(`   Consider using paid proxies or disabling proxy (useProxy: 0) if issues persist.`)
     this.currentProxy = fallback
     return fallback
   }
@@ -277,8 +417,15 @@ export class ProxyManager {
       return []
     }
 
+    // For HTTP proxies with authentication, use puppeteer-page-proxy instead of --proxy-server
+    if (proxy.username && proxy.password && proxy.protocol === 'http') {
+      logger.debug(`Skipping --proxy-server for authenticated HTTP proxy (using puppeteer-page-proxy)`)
+      return []
+    }
+
+    // For non-authenticated proxies or other protocols, use --proxy-server
     const proxyUrl = `${proxy.protocol}://${proxy.host}:${proxy.port}`
-    logger.info(`Using proxy for Puppeteer: ${proxyUrl}`)
+    logger.debug(`Using proxy for Puppeteer: ${proxyUrl}`)
     return [`--proxy-server=${proxyUrl}`]
   }
 
@@ -376,7 +523,7 @@ export class ProxyManager {
 
   public setCurrentProxy(proxy: ProxyInfo): void {
     this.currentProxy = proxy
-    logger.info(`Current proxy set to: ${proxy.host}:${proxy.port} (${proxy.protocol})`)
+    logger.debug(`Current proxy set to: ${proxy.host}:${proxy.port} (${proxy.protocol})`)
     this.validateAndWarmUpProxy()
   }
 
@@ -391,7 +538,7 @@ export class ProxyManager {
   private async validateAndWarmUpProxy(): Promise<void> {
     if (!this.currentProxy) return
 
-    logger.info("Validating and warming up proxy connection...")
+    logger.debug("Validating and warming up proxy connection...")
 
     try {
       const tcpOk = await this.testTcpConnectivity()
@@ -417,7 +564,7 @@ export class ProxyManager {
   public async warmUpConnection(): Promise<void> {
     if (!this.currentProxy) return
 
-    logger.info("Warming up proxy connection for maximum speed...")
+    logger.debug("Warming up proxy connection for maximum speed...")
 
     try {
       const warmUpPromises = []
@@ -462,7 +609,7 @@ export class ProxyManager {
     if (this.keepAliveInterval) {
       clearInterval(this.keepAliveInterval)
       this.keepAliveInterval = null
-      logger.info("Stopped proxy keep-alive pings")
+      logger.debug("Stopped proxy keep-alive pings")
     }
   }
 

@@ -68,10 +68,25 @@ npm run dev
 ### Proxy Settings
 Edit `src/config/index.ts`:
 ```typescript
-useProxy: 5,        // 0=direct, 1=HTTP, 2=HTTPS, 3=SOCKS4, 4=SOCKS5, 5=stable
+useProxy: 1,        // 0=direct, 1=HTTP file, 2=HTTPS file, 3=SOCKS4, 4=SOCKS5, 5=stable
 proxyFile: "proxy.txt"  // Your proxy list
 enableSecureConnection: false,  // Enable/disable secure connection manager
 ```
+
+### Adding Proxies
+Edit `proxy.txt` with your proxy details:
+```
+# Format: host:port:username:password (for authenticated proxies)
+# Format: host:port (for non-authenticated proxies)
+
+# Examples:
+http://proxy.example.com:8080:username:password
+socks5://socks.example.com:1080:username:password
+192.168.1.100:3128:user:pass123
+proxy.provider.com:8080
+```
+
+Set `useProxy: 1` in `src/config/index.ts` for HTTP proxies, `useProxy: 4` for SOCKS5, etc.
 
 ### Optional Configuration
 

@@ -1,9 +1,27 @@
+/**
+ * Crossfire Legends Referral Bot
+ * 
+ * Automated referral registration bot for Crossfire Legends game.
+ * Features:
+ * - Automatic temporary email generation via GuerrillaMail
+ * - Browser automation using Puppeteer Core
+ * - Proxy support (HTTP, HTTPS, SOCKS4, SOCKS5)
+ * - Automatic account registration and verification
+ * - Multi-platform support (Windows, Linux, macOS, Android Termux)
+ * 
+ * @author mra1k3r0
+ * @license MIT
+ */
+
 import { CrossfireReferralBot } from "./bot/crossfire-referral-bot"
 import { loadConfig } from "./config"
 import { logger } from "./utils/logger"
 import { generateSecurePassword } from "./utils/helpers"
 import type { RegistrationConfig } from "./types"
 
+/**
+ * Main entry point - initializes and runs the referral bot
+ */
 async function main() {
   const botConfig = loadConfig()
   const sessionPassword = generateSecurePassword()
@@ -14,9 +32,9 @@ async function main() {
     referralCode: "abbqzbq",
   }
 
-  logger.info("Starting Crossfire Referral Automation")
-  logger.info(`Email: ${config.email}`)
-  logger.info(`Password: ${"*".repeat(config.password.length)} (${config.password.length} chars, secure)`)
+  logger.success("Starting Crossfire Referral Automation")
+  logger.debug(`Email: ${config.email}`)
+  logger.debug(`Password: ${"*".repeat(config.password.length)} (${config.password.length} chars, secure)`)
 
   const bot = new CrossfireReferralBot(config)
   await bot.run()
@@ -26,12 +44,12 @@ async function main() {
 
 // Handle graceful shutdown
 process.on("SIGINT", () => {
-  logger.info("Received SIGINT, shutting down gracefully...")
+  logger.debug("Received SIGINT, shutting down gracefully...")
   process.exit(0)
 })
 
 process.on("SIGTERM", () => {
-  logger.info("Received SIGTERM, shutting down gracefully...")
+  logger.debug("Received SIGTERM, shutting down gracefully...")
   process.exit(0)
 })
 

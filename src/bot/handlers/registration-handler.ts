@@ -1,3 +1,7 @@
+/**
+ * RegistrationHandler - Handles registration form filling and submission
+ */
+
 /* eslint-disable no-var */
 declare var document: any
 /* eslint-enable no-var */

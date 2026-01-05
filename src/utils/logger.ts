@@ -1,3 +1,8 @@
+/**
+ * Logger module - Provides structured logging with multiple log levels
+ * Supports colored output, file logging, and custom log levels
+ */
+
 import * as fs from "fs"
 import * as path from "path"
 
@@ -20,15 +25,13 @@ export interface LoggerConfig {
 export class Logger {
   private config: LoggerConfig
   private timezone = "Asia/Manila"
-
-  // ANSI color codes for backgrounds and text
   private colors = {
     bg: {
       ERROR: "\x1b[41m",
       WARN: "\x1b[43m",
       INFO: "\x1b[44m",
       SUCCESS: "\x1b[42m",
-      SUPER: "\x1b[45m",
+      SUPER: "\x1b[45m", // Magenta background for unique/rare logs
       DEBUG: "\x1b[47m",
     },
     text: {
@@ -44,7 +47,7 @@ export class Logger {
 
   constructor(config: Partial<LoggerConfig> = {}) {
     this.config = {
-      level: LogLevel.INFO,
+      level: LogLevel.INFO, // Default to INFO level (SUCCESS logs hidden by default)
       enableFileLogging: false,
       logFilePath: "logs/app.log",
       enableColors: true,
@@ -88,7 +91,15 @@ export class Logger {
     return `${bgColor}${textColor}[${levelName}]${reset} - ${timestamp}: ${message}`
   }
 
+  /**
+   * Checks if a log level should be displayed based on current config
+   * SUPER messages are always shown regardless of log level
+   * @param level - Log level to check
+   */
   private shouldLog(level: LogLevel): boolean {
+    if (level === LogLevel.SUPER) {
+      return true
+    }
     return level <= this.config.level
   }
 
@@ -126,6 +137,14 @@ export class Logger {
     if (this.shouldLog(LogLevel.SUCCESS)) {
       this.writeLog("SUCCESS", message)
     }
+  }
+
+  /**
+   * Forces a success message to display regardless of log level
+   * @param message - Success message to display
+   */
+  successForce(message: string): void {
+    this.writeLog("SUCCESS", message)
   }
 
   super(message: string): void {

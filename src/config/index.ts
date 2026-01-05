@@ -1,7 +1,15 @@
+/**
+ * Configuration module for Crossfire Legends Referral Bot
+ * Handles environment variables, default settings, and config validation
+ */
+
 import { logger } from "../utils/logger"
 import * as path from "path"
 import * as dotenv from "dotenv"
 
+/**
+ * Main configuration interface
+ */
 export interface Config {
   // Email and password for Levelinf account
   levelinfEmail: string
@@ -76,7 +84,7 @@ export const defaultConfig: Config = {
   levelinfPassword: process.env.LEVELINF_PASSWORD || "TempPass123!",
 
   // Proxy settings
-  useProxy: 0, // 0=no proxy, 1=HTTP file, 2=HTTPS file, 3=SOCKS4, 4=SOCKS5, 5=Stable mode
+  useProxy: 1, // 0=no proxy, 1=HTTP file, 2=HTTPS file, 3=SOCKS4, 4=SOCKS5, 5=Stable mode
   proxyFile: "proxy.txt",
 
   // SOCKS proxy sources
@@ -85,7 +93,7 @@ export const defaultConfig: Config = {
 
   // Proxy manager settings
   proxyTestCount: 35,
-  proxyTimeout: 5000,
+  proxyTimeout: 15000,
   proxyMaxConcurrentTests: 20,
   proxyKeepAliveEnabled: true,
   proxyKeepAliveInterval: 10000,
@@ -122,16 +130,16 @@ export const defaultConfig: Config = {
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
 
   // Timing settings (in milliseconds)
-  pageLoadTimeout: 60000,
-  elementWaitTimeout: 30000,
-  actionDelay: 1000,
+  pageLoadTimeout: 90000,
+  elementWaitTimeout: 45000,
+  actionDelay: 1500,
 
   // Email verification settings
-  maxEmailCheckAttempts: 15,
+  maxEmailCheckAttempts: 25,
   emailCheckInterval: 5000,
 
   // Debug settings
-  debugMode: false,
+  debugMode: true,
   screenshotOnError: true,
 
   // Bot settings
@@ -163,14 +171,8 @@ export function loadConfig(): Config {
     logger.debug(`Resolved log file path to: ${config.logFilePath}`)
   }
 
-  // Validate required fields
-  if (!config.levelinfEmail || config.levelinfEmail === "your-email@levelinf.com") {
-    logger.warn("WARNING: Using placeholder email! Set LEVELINF_EMAIL environment variable or edit config.")
-  }
-
-  if (!config.levelinfPassword || config.levelinfPassword === "your-password") {
-    logger.warn("WARNING: Using placeholder password! Set LEVELINF_PASSWORD environment variable or edit config.")
-  }
+  // Validate required fields (warnings removed - using temp email by default)
+  // Note: Email and password are optional - bot uses temp email if not provided
 
   // Log proxy status
   const proxyMessages: Record<number, string> = {
@@ -184,7 +186,7 @@ export function loadConfig(): Config {
 
   const message = proxyMessages[config.useProxy]
   if (message) {
-    logger.info(message)
+    logger.debug(message)
   } else {
     logger.warn("Invalid proxy setting, defaulting to STABLE mode")
     config.useProxy = 5

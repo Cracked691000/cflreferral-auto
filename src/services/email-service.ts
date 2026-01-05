@@ -3,8 +3,27 @@ import { logger } from "../utils/logger"
 import { generateHumanUsername } from "../utils/helpers"
 import type { TempEmailAccount, GetEmailListResponse } from "../types"
 
+const GUERRILLAMAIL_DOMAINS = [
+  "guerrillamail.com",
+  "guerrillamailblock.com",
+  "guerrillamail.net",
+  "guerrillamail.org",
+  "guerrillamail.biz",
+  "guerrillamail.de",
+  "guerrillamail.info",
+  "pokemail.net",
+  "spam4.me",
+  "grr.la",
+  "sharklasers.com",
+]
+
+/**
+ * EmailService - Handles temporary email creation and verification code retrieval
+ */
 export class EmailService {
   private tempEmailAccount: TempEmailAccount | null = null
+  private currentDomain: string = "guerrillamail.com"
+  private baseUrl: string = "https://api.guerrillamail.com"
 
   private getRequestHeaders(): Record<string, string> {
     return {
@@ -22,12 +41,22 @@ export class EmailService {
     }
   }
 
-  async createTempEmail(): Promise<TempEmailAccount> {
-    console.log("📧 Creating temporary email account...")
+  private getRandomDomain(): string {
+    return GUERRILLAMAIL_DOMAINS[Math.floor(Math.random() * GUERRILLAMAIL_DOMAINS.length)]
+  }
 
-    const url = "https://api.guerrillamail.com/ajax.php?f=set_email_user"
+  /**
+   * Creates a temporary email account using GuerrillaMail API
+   * @returns Promise resolving to TempEmailAccount with email address and session token
+   * @throws Error if email creation fails
+   */
+  async createTempEmail(): Promise<TempEmailAccount> {
+    logger.info("📧 Creating temporary email account...")
+
+    const username = generateHumanUsername()
+    const url = `${this.baseUrl}/ajax.php?f=set_email_user`
     const formData = new URLSearchParams()
-    formData.append("email_user", generateHumanUsername())
+    formData.append("email_user", username)
     formData.append("lang", "en")
 
     try {
@@ -40,31 +69,39 @@ export class EmailService {
 
       if (account.email_addr) {
         this.tempEmailAccount = account
+        // Extract domain from email address
+        const emailParts = account.email_addr.split("@")
+        this.currentDomain = emailParts.length > 1 ? emailParts[1] : "guerrillamail.com"
         logger.success(`Temp email created: ${account.email_addr}`)
         return account
       } else {
-        throw new Error("Failed to create temp email account")
+        throw new Error("Failed to create temp email account - invalid response")
       }
     } catch (error) {
-      console.error("❌ Failed to create temp email:", error)
+      logger.error(`❌ Failed to create temp email: ${error}`)
       throw error
     }
   }
 
+  /**
+   * Retrieves verification code from email inbox
+   * Checks for emails from levelinfinite or containing verification keywords
+   * @returns Verification code (4-8 digits) or null if not found
+   */
   async getVerificationCode(): Promise<string | null> {
     if (!this.tempEmailAccount) {
-      console.log("❌ No temp email account available")
+      logger.error("❌ No temp email account available")
       return null
     }
 
-    console.log("📨 Checking for verification email...")
+    logger.debug("📨 Checking for verification email...")
 
     const params = new URLSearchParams()
     params.append("f", "get_email_list")
     params.append("sid_token", this.tempEmailAccount.sid_token)
     params.append("offset", "0")
 
-    const url = `https://api.guerrillamail.com/ajax.php?${params.toString()}`
+    const url = `${this.baseUrl}/ajax.php?${params.toString()}`
 
     try {
       const response: AxiosResponse<GetEmailListResponse> = await axios.get(url, {
@@ -75,26 +112,16 @@ export class EmailService {
 
       if (response.data.list && response.data.list.length > 0) {
         for (const email of response.data.list) {
-          if (
-            email.mail_from.includes("levelinfinite") ||
-            email.mail_subject.toLowerCase().includes("verify") ||
-            email.mail_subject.toLowerCase().includes("code") ||
-            email.mail_subject.toLowerCase().includes("verification")
-          ) {
-            console.log(`📧 Found verification email: ${email.mail_subject}`)
-            console.log(`📄 Email excerpt: ${email.mail_excerpt}`)
+          if (this.isVerificationEmail(email)) {
+            logger.info(`📧 Found verification email: ${email.mail_subject}`)
+            logger.debug(`📄 Email excerpt: ${email.mail_excerpt}`)
 
-            let codeMatch = email.mail_subject.match(/\b\d{4,8}\b/)
-            if (!codeMatch && email.mail_excerpt) {
-              codeMatch = email.mail_excerpt.match(/\b\d{4,8}\b/)
-            }
-
-            if (codeMatch) {
-              const code = codeMatch[0]
-              console.log(`🔢 Extracted verification code: ${code}`)
+            const code = this.extractVerificationCode(email)
+            if (code) {
+              logger.success(`🔢 Extracted verification code: ${code}`)
               return code
             } else {
-              console.log("⚠️  Could not extract code from email content")
+              logger.warn("⚠️  Could not extract code from email content")
             }
           }
         }
@@ -103,12 +130,37 @@ export class EmailService {
       logger.debug("No verification email found yet, will retry...")
       return null
     } catch (error) {
-      console.error("❌ Failed to check emails:", error)
+      logger.error(`❌ Failed to check emails: ${error}`)
       return null
     }
   }
 
+  private isVerificationEmail(email: { mail_from: string; mail_subject: string }): boolean {
+    const from = email.mail_from.toLowerCase()
+    const subject = email.mail_subject.toLowerCase()
+
+    return (
+      from.includes("levelinfinite") ||
+      subject.includes("verify") ||
+      subject.includes("code") ||
+      subject.includes("verification") ||
+      subject.includes("confirm")
+    )
+  }
+
+  private extractVerificationCode(email: { mail_subject: string; mail_excerpt?: string }): string | null {
+    let codeMatch = email.mail_subject.match(/\b\d{4,8}\b/)
+    if (!codeMatch && email.mail_excerpt) {
+      codeMatch = email.mail_excerpt.match(/\b\d{4,8}\b/)
+    }
+    return codeMatch ? codeMatch[0] : null
+  }
+
   getTempEmailAccount(): TempEmailAccount | null {
     return this.tempEmailAccount
+  }
+
+  getCurrentDomain(): string {
+    return this.currentDomain
   }
 }

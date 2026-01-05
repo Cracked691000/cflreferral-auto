@@ -1,3 +1,7 @@
+/**
+ * PasswordHandler - Handles password creation page interactions
+ */
+
 import type { Page } from "puppeteer-core"
 import { delay } from "../../utils/helpers"
 import { logger } from "../../utils/logger"

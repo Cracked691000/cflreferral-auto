@@ -1,20 +1,37 @@
+/**
+ * VerificationHandler - Handles email verification and form interactions
+ * Manages age verification, agreement checkboxes, and email code retrieval
+ */
+
 /* eslint-disable no-var */
 declare var window: any
 declare var document: any
 /* eslint-enable no-var */
 
+import * as fs from "fs"
+import * as path from "path"
 import type { Page } from "puppeteer-core"
 import { delay, randomDelay } from "../../utils/helpers"
 import { logger } from "../../utils/logger"
 import type ProxyManager from "../../proxy/proxy-manager"
 import type { EmailService } from "../../services/email-service"
 
+/**
+ * Handles email verification, age verification, agreement checkboxes, and country selection
+ */
 export class VerificationHandler {
   private page: Page
   private proxyManager: ProxyManager | null
   private emailService: EmailService
   private config: any
 
+  /**
+   * Creates a new VerificationHandler instance
+   * @param page - Puppeteer page instance
+   * @param proxyManager - Proxy manager for handling proxy connections
+   * @param emailService - Email service for verification codes
+   * @param config - Application configuration
+   */
   constructor(page: Page, proxyManager: ProxyManager | null, emailService: EmailService, config: any) {
     this.page = page
     this.proxyManager = proxyManager
@@ -33,6 +50,7 @@ export class VerificationHandler {
     const adjustedDelay = this.proxyManager?.getCurrentProxy() ? baseDelay * 1.5 : baseDelay
     await delay(adjustedDelay)
   }
+
 
   async clickGetCodeButton(): Promise<boolean> {
     try {
@@ -114,6 +132,10 @@ export class VerificationHandler {
     return false
   }
 
+  /**
+   * Waits for and retrieves verification code from email service
+   * @returns Promise<string | null> - verification code or null if not received
+   */
   async waitForVerificationCode(): Promise<string | null> {
     logger.info("STEP 2: Waiting for verification code...")
 
@@ -145,6 +167,36 @@ export class VerificationHandler {
     return verificationCode
   }
 
+  /**
+   * Quickly checks if verification code is already available without waiting
+   * @returns Promise<string | null> - existing verification code or null
+   */
+  async checkExistingVerificationCode(): Promise<string | null> {
+    logger.debug("Checking for existing verification code...")
+
+    const originalProxySetting = this.config.useProxy
+    if (this.config.useProxy === 5) {
+      logger.debug("STABLE MODE: Temporarily disabling proxy for email check")
+      this.proxyManager?.stopKeepAlive?.()
+      this.config.useProxy = 0
+    }
+
+    // Just check once without waiting
+    const verificationCode = await this.emailService.getVerificationCode()
+
+    if (originalProxySetting === 5) {
+      logger.debug("STABLE MODE: Restoring proxy")
+      this.config.useProxy = 5
+    }
+
+    return verificationCode
+  }
+
+  /**
+   * Fills the verification code input field
+   * @param verificationCode - the verification code to enter
+   * @returns Promise<boolean> - true if code was filled successfully
+   */
   async fillVerificationCode(verificationCode: string): Promise<boolean> {
     const codeSelectors = [
       'input[placeholder*="Verification code"]',
@@ -177,6 +229,11 @@ export class VerificationHandler {
     return false
   }
 
+  /**
+   * Handles country/region selection with automatic weighted randomization
+   * Prioritizes shorter country names for faster typing when using proxy
+   * @returns Promise<boolean> - true if country selection completed
+   */
   async handleCountrySelection(): Promise<boolean> {
     logger.info("STEP 3: Checking for country/region selection...")
 
@@ -206,9 +263,7 @@ export class VerificationHandler {
             if (countryElement) {
               logger.info(`Found country/region selector: ${selector}`)
 
-              // Check if a country is already selected (comprehensive check)
               const selectionCheck = await this.page.evaluate(() => {
-                // Check for selected country indicators (like the HTML you showed)
                 const selectedElements = document.querySelectorAll(
                   '.infinite-select-selection-item, [class*="selected"], [aria-selected="true"], option[selected]'
                 )
@@ -225,7 +280,6 @@ export class VerificationHandler {
                   }
                 }
 
-                // Check traditional select element
                 const selectElement = document.querySelector('select#area, select[name*="country"]')
                 if (selectElement) {
                   const selectedOption = (selectElement as any).options[(selectElement as any).selectedIndex]
@@ -239,75 +293,57 @@ export class VerificationHandler {
                 return { isSelected: false, selectedCountry: null }
               })
 
-              // Handle country selection based on config and current state
+              const isUsingProxy = !!this.proxyManager?.getCurrentProxy()
+
               if (selectionCheck.isSelected) {
-                if (this.config.disableCountryDropdown) {
-                  // Respect auto-selected country
+                if (this.config.disableCountryDropdown && !isUsingProxy) {
                   logger.success(`Country already selected by site: ${selectionCheck.selectedCountry} (respected auto-selection)`)
                   countrySelected = true
                   break
                 } else {
-                  // Force random selection even if already selected
-                  logger.info(`Country already selected (${selectionCheck.selectedCountry}) but forcing random selection...`)
-                  // Continue with dropdown manipulation below
+                  logger.info(`Country already selected (${selectionCheck.selectedCountry}) but forcing random selection...${isUsingProxy ? ' (using proxy - must select from proxy countries)' : ''}`)
                 }
               } else {
-                // No country selected, proceed with selection
                 logger.info("No country pre-selected, proceeding with dropdown selection...")
               }
 
-              // Use typing approach instead of scrolling through dropdown
               await countryElement.click()
               logger.info(`Clicked country/region selector: ${selector}`)
               await this.proxyAwareDelay(800)
 
-              // Clear any existing text first
+              // Clear existing text
               await this.page.keyboard.down('Control')
               await this.page.keyboard.press('a')
               await this.page.keyboard.up('Control')
               await this.page.keyboard.press('Backspace')
               await this.proxyAwareDelay(200)
 
-              // List of common countries to randomly select from
-              const countryList = [
-                "Germany", "France", "Italy", "Spain", "Netherlands", "Belgium",
-                "Switzerland", "Austria", "Sweden", "Norway", "Denmark", "Finland",
-                "Poland", "Czech Republic", "Hungary", "Slovakia", "Slovenia",
-                "Croatia", "Serbia", "Bosnia and Herzegovina", "Montenegro",
-                "Kosovo", "Albania", "North Macedonia", "Greece", "Bulgaria",
-                "Romania", "Moldova", "Ukraine", "Belarus", "Lithuania",
-                "Latvia", "Estonia", "Ireland", "United Kingdom", "Portugal",
-                "Canada", "Australia", "New Zealand", "Japan", "South Korea",
-                "Singapore", "Malaysia", "Thailand", "Indonesia", "Vietnam",
-                "Philippines", "India", "Pakistan", "Bangladesh", "Sri Lanka",
-                "Nepal", "Bhutan", "Maldives", "Turkey", "Israel", "Jordan",
-                "Lebanon", "Syria", "Iraq", "Iran", "Saudi Arabia", "UAE",
-                "Qatar", "Kuwait", "Bahrain", "Oman", "Yemen", "Egypt",
-                "Morocco", "Algeria", "Tunisia", "Libya", "Sudan", "Ethiopia",
-                "Kenya", "Tanzania", "Uganda", "Rwanda", "Burundi", "Zimbabwe",
-                "South Africa", "Namibia", "Botswana", "Zambia", "Malawi",
-                "Mozambique", "Angola", "Nigeria", "Ghana", "Ivory Coast",
-                "Senegal", "Mali", "Burkina Faso", "Niger", "Chad", "Cameroon",
-                "Gabon", "Congo", "DR Congo", "Central African Republic",
-                "Sudan", "South Sudan", "Somalia", "Djibouti", "Eritrea",
-                "Mexico", "Brazil", "Argentina", "Chile", "Colombia", "Peru",
-                "Venezuela", "Ecuador", "Bolivia", "Paraguay", "Uruguay",
-                "Cuba", "Jamaica", "Haiti", "Dominican Republic", "Puerto Rico"
-              ]
+              const countryList = ["Spain", "Philippines", "Panama", "Peru", "Zambia", "Zimbabwe", "Qatar"]
 
-              // Select random country
-              const randomCountry = countryList[Math.floor(Math.random() * countryList.length)]
+              const weights = countryList.map(country => {
+                const length = country.length
+                return Math.max(1, Math.floor(50 / Math.pow(length, 0.8)))
+              });
 
-              // Type the country name
+              const totalWeight = weights.reduce((sum, weight) => sum + weight, 0)
+              let random = Math.random() * totalWeight
+
+              let randomCountry: string = ""
+              for (let i = 0; i < countryList.length; i++) {
+                random -= weights[i]
+                if (random <= 0) {
+                  randomCountry = countryList[i]
+                  break
+                }
+              }
+              randomCountry = randomCountry || countryList.reduce((a, b) => a.length <= b.length ? a : b)
+
               await this.page.keyboard.type(randomCountry, { delay: 150 })
               logger.info(`Typed country name: ${randomCountry}`)
 
-              // Wait for dropdown to filter and show results
               await this.proxyAwareDelay(1000)
 
-              // Try to select the first matching option
               const selectionResult = await this.page.evaluate((countryName) => {
-                // Look for the typed country in dropdown options
                 const options = document.querySelectorAll(
                   'li[class*="option"], [class*="dropdown"] li, .ant-select-dropdown li, .infinite-select-dropdown li'
                 )
@@ -321,7 +357,6 @@ export class VerificationHandler {
                   }
                 }
 
-                // If no exact match, try pressing Enter to select first result
                 return null
               }, randomCountry)
 
@@ -330,14 +365,12 @@ export class VerificationHandler {
                 countrySelected = true
                 await this.proxyAwareDelay(500)
               } else {
-                // Press Enter to select the first filtered result
                 await this.page.keyboard.press('Enter')
                 logger.success(`Selected country by Enter key: ${randomCountry}`)
                 countrySelected = true
                 await this.proxyAwareDelay(500)
               }
 
-              // Check if country selection affected age checkbox
               const selectedCountryName = selectionResult || randomCountry
               try {
                 const ageCheckbox = await this.page.$('#adultAge')
@@ -392,109 +425,41 @@ export class VerificationHandler {
     return countrySelected
   }
 
+  /**
+   * Handles age verification by finding and filling age input field
+   * @returns Promise<boolean> - true if age was entered successfully
+   */
   async handleAgeVerification(): Promise<boolean> {
     logger.info("Checking for age verification...")
 
-    let ageHandled = false
-    let ageRetryCount = 0
-    const maxAgeRetries = 2
+    try {
+      const ageInput = await this.page.$('input[id*="age"]:not([placeholder*="code"]):not([placeholder*="verification"]):not([placeholder*="verify"]):not([placeholder*="otp"])')
 
-    while (!ageHandled && ageRetryCount < maxAgeRetries) {
-      try {
-        const ageSelectors = [
-          'input[type="number"][placeholder*="age" i]',
-          'input[placeholder*="age" i]',
-          'input[name*="age"]',
-          'select[name*="age"]',
-          'select[placeholder*="age" i]',
-          '[class*="age"] input',
-          '[class*="age"] select',
-          'input[id*="age"]',
-          'select[id*="age"]',
-        ]
-
-        for (const ageSelector of ageSelectors) {
-          try {
-            const ageElement = await this.page.$(ageSelector)
-            if (ageElement) {
-              logger.info(`Found age input: ${ageSelector}`)
-
-              await this.proxyAwareDelay(500)
-
-              const tagName = await this.page.evaluate((el) => (el as any).tagName.toLowerCase(), ageElement)
-
-              if (tagName === "select") {
-                logger.info(`Clicking age selector: ${ageSelector}`)
-                await ageElement.click()
-                await this.proxyAwareDelay(500)
-
-                const ageSelected = await this.page.evaluate(() => {
-                  const options = document.querySelectorAll('option, li[class*="option"]')
-                  for (let i = 0; i < options.length; i++) {
-                    const option = options[i]
-                    const text = (option as any).textContent || ""
-                    const value = (option as any).value || ""
-                    const ageNum = Number.parseInt(text) || Number.parseInt(value)
-                    if (ageNum >= 18 && ageNum <= 65) {
-                      ;(option as any).click()
-                      return ageNum
-                    }
-                  }
-                  if (options.length > 1) {
-                    ;(options[1] as any).click()
-                    return (options[1] as any).textContent
-                  }
-                  return null
-                })
-
-                if (ageSelected) {
-                  logger.success(`Selected age: ${ageSelected}`)
-                  ageHandled = true
-                  break
-                }
-              } else {
-                // It's an input field
-                const randomAge = Math.floor(Math.random() * (45 - 21 + 1)) + 21
-                await ageElement.click({ clickCount: 3 })
-                await ageElement.type(randomAge.toString(), { delay: 150 })
-                logger.success(`Entered age: ${randomAge}`)
-                ageHandled = true
-                break
-              }
-            }
-          } catch (e) {
-            continue
-          }
-        }
-
-        if (!ageHandled) {
-          ageRetryCount++
-          if (ageRetryCount < maxAgeRetries) {
-            logger.warn(`Age verification retry... (${ageRetryCount}/${maxAgeRetries})`)
-            await this.proxyAwareDelay(1500)
-          }
-        }
-      } catch (ageError) {
-        logger.warn(`Age verification error: ${ageError}`)
-        ageRetryCount++
-        if (ageRetryCount < maxAgeRetries) {
-          await this.proxyAwareDelay(1500)
-        }
+      if (ageInput) {
+        const age = 33
+        await ageInput.click({ clickCount: 3 })
+        await this.proxyAwareDelay(300)
+        await ageInput.type(age.toString(), { delay: 120 })
+        logger.success(`Entered age: ${age}`)
+        return true
       }
-    }
 
-    if (!ageHandled) {
-      logger.info("No age verification found or could not handle - continuing")
+      logger.debug("No age input field found")
+      return false
+    } catch (error) {
+      logger.warn(`Age verification error: ${error}`)
+      return false
     }
-
-    return ageHandled
   }
 
-
+  /**
+   * Handles agreement checkbox interactions based on configuration
+   * Checks required agreements and prevents age confirmation when disabled
+   * @returns Promise<boolean> - true if checkbox handling completed
+   */
   async handleAgreementCheckboxes(): Promise<boolean> {
     logger.info("Looking for agreement checkboxes...")
 
-    // Debug: Log all checkbox states before any interaction
     try {
       const allCheckboxes = await this.page.$$('input[type="checkbox"]')
       logger.info(`Found ${allCheckboxes.length} total checkboxes on page`)
@@ -518,29 +483,24 @@ export class VerificationHandler {
 
     let checkboxCount = 0
 
-    // PROACTIVE PROTECTION: Disable age checkbox immediately if confirmation is disabled
     if (!this.config.enableAgeConfirmation) {
       try {
         await this.page.evaluate(() => {
           const ageCheckbox = document.getElementById('adultAge') as any
           if (ageCheckbox) {
-            // Immediately disable and uncheck
             ageCheckbox.checked = false
             ageCheckbox.disabled = true
 
-            // Try to override checked property (may fail if already defined)
             try {
               Object.defineProperty(ageCheckbox, 'checked', {
                 get: () => false,
-                set: () => false, // Always return false
-                configurable: true // Allow reconfiguration
+                set: () => false,
+                configurable: true
               })
             } catch (e) {
-              // If property override fails, rely on event prevention
-              console.warn('Could not override checked property, using event prevention only')
+              logger.debug('Could not override checked property, using event prevention only')
             }
 
-            // Prevent all interaction events
             const preventCheck = (e: any) => {
               ageCheckbox.checked = false
               e.preventDefault()
@@ -550,8 +510,6 @@ export class VerificationHandler {
             ageCheckbox.addEventListener('change', preventCheck, true)
             ageCheckbox.addEventListener('click', preventCheck, true)
             ageCheckbox.addEventListener('input', preventCheck, true)
-
-            console.log('Age confirmation checkbox proactively disabled')
           }
         })
         logger.info("Proactive age confirmation protection applied")
@@ -560,9 +518,7 @@ export class VerificationHandler {
       }
     }
 
-    // Handle checkboxes based on age confirmation config
     if (this.config.enableAgeConfirmation) {
-      // If age confirmation is enabled, check all required agreements
       const requiredSelectors = [
         "#agreedPp",    // Privacy Policy (required)
         "#agreedTos",   // Terms of Service (required)
@@ -586,7 +542,6 @@ export class VerificationHandler {
         }
       }
 
-      // Ensure age confirmation is checked
       try {
         const ageCheckbox = await this.page.$('#adultAge')
         if (ageCheckbox) {
@@ -605,13 +560,9 @@ export class VerificationHandler {
       }
 
     } else {
-      // If age confirmation is disabled, only check these two specific checkboxes
-      // AVOID checking the "I confirm the following:" master checkbox as it auto-checks age confirmation
       const allowedSelectors = [
-        "#agreedAllLi",   // Combined ToS + Privacy Policy agreement (required)
-        "#agreedIsEmail", // Email subscription (optional but allowed)
-        // Explicitly SKIP: "I confirm the following:" master checkbox (would auto-check age)
-        // Explicitly SKIP: #adultAge (age confirmation disabled per config)
+        "#agreedAllLi",
+        "#agreedIsEmail"
       ]
 
       for (const selector of allowedSelectors) {
@@ -625,7 +576,6 @@ export class VerificationHandler {
               logger.info(`Checked agreement: ${selector}`)
               await this.proxyAwareDelay(300)
 
-              // Immediately check if age confirmation got auto-checked after this click
               if (!this.config.enableAgeConfirmation) {
                 try {
                   const ageState = await this.page.evaluate(() => {
@@ -653,7 +603,6 @@ export class VerificationHandler {
         }
       }
 
-      // Multiple attempts to ensure age confirmation stays unchecked
       for (let attempt = 0; attempt < 3; attempt++) {
         try {
           const ageCheckbox = await this.page.$('#adultAge')
@@ -671,7 +620,6 @@ export class VerificationHandler {
               await ageCheckbox.click() // Uncheck if it was auto-checked
               await this.proxyAwareDelay(500)
 
-              // Verify it was actually unchecked
               const stillChecked = await this.page.evaluate((el) => (el as any).checked, ageCheckbox)
               if (!stillChecked) {
                 logger.info("Successfully unchecked age confirmation")
@@ -692,7 +640,6 @@ export class VerificationHandler {
         }
       }
 
-      // Also check master checkbox and uncheck it if it would auto-check age
       try {
         const masterCheckbox = await this.page.$('#agreedAllLi')
         if (masterCheckbox) {
@@ -710,10 +657,9 @@ export class VerificationHandler {
       logger.info("Age confirmation checkbox skipped (disabled in config)")
     }
 
-    // Optional checkboxes (email subscriptions) - check these regardless
     const optionalSelectors = [
-      "#agreedIsEmail",      // General email subscription
-      "#agreedKoNightEmail", // Korean night email (optional)
+      "#agreedIsEmail",
+      "#agreedKoNightEmail"
     ]
 
     for (const selector of optionalSelectors) {
@@ -733,7 +679,6 @@ export class VerificationHandler {
       }
     }
 
-    // Also try clicking labels that might be checkboxes
     try {
       await this.page.evaluate(() => {
         const labels = document.querySelectorAll('label[class*="checkbox"], label[for*="agree"]')
@@ -748,25 +693,20 @@ export class VerificationHandler {
       // Ignore errors
     }
 
-    // Final verification and forced prevention for age confirmation
     if (!this.config.enableAgeConfirmation) {
       try {
-        // Final aggressive prevention - disable the checkbox entirely
         await this.page.evaluate(() => {
           const ageCheckbox = document.getElementById('adultAge') as any
           if (ageCheckbox) {
-            // Force uncheck and disable the checkbox
             ageCheckbox.checked = false
             ageCheckbox.disabled = true
 
-            // Try to prevent future checking (may fail if property already configured)
             try {
               Object.defineProperty(ageCheckbox, 'checked', {
                 get: () => false,
                 set: (value: boolean) => {
                   if (value) {
                     console.warn('Age confirmation checkbox was attempted to be checked - blocking')
-                    // Force it back to unchecked after a short delay
                     setTimeout(() => {
                       ageCheckbox.checked = false
                     }, 10)
@@ -779,7 +719,6 @@ export class VerificationHandler {
               console.warn('Could not configure checked property override, using event prevention only')
             }
 
-            // Add event listeners to prevent checking
             ageCheckbox.addEventListener('change', (e: any) => {
               if (ageCheckbox.checked) {
                 console.warn('Age confirmation checkbox change event blocked')
@@ -802,7 +741,6 @@ export class VerificationHandler {
           }
         })
 
-        // Verify the protection worked
         await this.proxyAwareDelay(100)
         const finalState = await this.page.evaluate(() => {
           const ageCheckbox = document.getElementById('adultAge') as any
@@ -820,7 +758,6 @@ export class VerificationHandler {
       }
     }
 
-    // Final comprehensive check for age confirmation
     if (!this.config.enableAgeConfirmation) {
       try {
         const finalAgeState = await this.page.evaluate(() => {
@@ -840,7 +777,6 @@ export class VerificationHandler {
           logger.error(`FINAL CHECK FAILED: Age confirmation is still checked! Disabled: ${finalAgeState.ageDisabled}`)
           logger.error(`All checkbox states: ${JSON.stringify(finalAgeState.allCheckboxes)}`)
 
-          // Emergency uncheck
           await this.page.evaluate(() => {
             const ageCheckbox = document.getElementById('adultAge') as any
             if (ageCheckbox) {

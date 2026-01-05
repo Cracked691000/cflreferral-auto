@@ -16,7 +16,12 @@ import { SecureConnectionManager } from "../proxy/secure-connection-manager"
 import { RegistrationHandler } from "./handlers/registration-handler"
 import { VerificationHandler } from "./handlers/verification-handler"
 import { PasswordHandler } from "./handlers/password-handler"
+import { LocalProxyServer } from "../proxy/local-proxy-server"
 
+/**
+ * CrossfireReferralBot - Main bot class for automated referral registration
+ * Handles browser automation, email verification, and account creation
+ */
 export class CrossfireReferralBot {
   private browser: Browser | null = null
   private page: Page | null = null
@@ -24,17 +29,26 @@ export class CrossfireReferralBot {
   private currentEmail = ""
   private sessionPassword: string
   private proxyManager: ProxyManager | null = null
+  private currentWorkingProxy: any = null
+  private localProxyServer: LocalProxyServer | null = null
   private quantumProxyManager: QuantumProxyManager | null = null
   private secureConnectionManager: SecureConnectionManager | null = null
   private emailService: EmailService
+  private skipProxyOnRestart: boolean = false
 
+  /**
+   * @param registrationConfig - Configuration for registration (email, password, referralCode)
+   */
   constructor(registrationConfig: RegistrationConfig) {
     this.config = loadConfig()
     this.currentEmail = registrationConfig.email
     this.sessionPassword = registrationConfig.password
     this.emailService = new EmailService()
 
+    logger.debug(`Proxy config check - useProxy: ${this.config.useProxy}, proxyFile: ${this.config.proxyFile}`)
     if (this.config.useProxy && this.config.useProxy > 0) {
+      logger.debug(`Initializing proxy manager with type: ${this.config.useProxy}`)
+      logger.info(`🔧 Initializing proxy system...`)
       this.proxyManager = new ProxyManager({
         proxyType: this.config.useProxy,
         proxyFile: this.config.proxyFile,
@@ -45,6 +59,10 @@ export class CrossfireReferralBot {
         testCount: this.config.proxyTestCount,
         verbose: this.config.debugMode
       })
+      logger.debug(`Proxy manager initialized, proxy count: ${this.proxyManager.getProxyCount()}`)
+      logger.info(`✅ Proxy system initialized with ${this.proxyManager.getProxyCount()} proxies`)
+    } else {
+      logger.warn(`Proxy not enabled - useProxy: ${this.config.useProxy}`)
     }
   }
 
@@ -94,7 +112,7 @@ export class CrossfireReferralBot {
       try {
         const path = execSync(`which ${cmd} 2>/dev/null`, { encoding: 'utf8' }).trim()
         if (path) {
-          logger.info(`Found browser via which: ${path}`)
+          logger.debug(`Found browser via which: ${path}`)
           return path
         }
       } catch (e) {
@@ -106,7 +124,7 @@ export class CrossfireReferralBot {
     for (const path of browserPaths) {
       try {
         require('fs').accessSync(path, require('fs').constants.F_OK)
-        logger.info(`Found browser at: ${path}`)
+        logger.debug(`Found browser at: ${path}`)
         return path
       } catch (e) {
         // Path doesn't exist, continue
@@ -117,13 +135,38 @@ export class CrossfireReferralBot {
     return undefined
   }
 
+  /**
+   * Launches a fresh browser instance with proxy configuration
+   * Automatically detects browser executable and configures proxy if enabled
+   */
   async launchFreshBrowser(): Promise<void> {
-    logger.info("Launching fresh browser instance...")
+    logger.debug("Launching fresh browser instance...")
+
+    // Skip proxy if restarting after proxy failure
+    const shouldSkipProxy = this.skipProxyOnRestart
+    if (this.skipProxyOnRestart) {
+      logger.debug("Skipping proxy setup (restarting after proxy failure)")
+      this.currentWorkingProxy = null
+      this.skipProxyOnRestart = false // Reset flag
+    }
+
+    // Get working proxy BEFORE launching browser
+    if (!shouldSkipProxy && this.config.useProxy && this.config.useProxy > 0 && this.proxyManager && !this.currentWorkingProxy) {
+      logger.debug("Getting working proxy for browser launch...")
+      const workingProxy = await this.proxyManager.getWorkingProxy()
+      logger.debug(`getWorkingProxy returned: ${workingProxy ? `${workingProxy.host}:${workingProxy.port} (${workingProxy.protocol})` : 'null'}`)
+      if (workingProxy) {
+        this.currentWorkingProxy = workingProxy
+        logger.debug(`Working proxy stored: ${workingProxy.host}:${workingProxy.port}`)
+      } else {
+        logger.warn("No working proxy found, proceeding without proxy")
+      }
+    }
 
     // Detect browser executable
     const browserExecutable = await this.detectBrowserExecutable()
     if (browserExecutable) {
-      logger.info(`Using browser: ${browserExecutable}`)
+      logger.debug(`Using browser: ${browserExecutable}`)
     }
 
     const browserArgs = [
@@ -142,15 +185,79 @@ export class CrossfireReferralBot {
       `--user-agent=${this.config.userAgent}`,
     ]
 
-    if (this.config.useProxy && this.config.useProxy > 0 && this.proxyManager) {
-      logger.info("Getting working proxy for browser launch...")
-      const workingProxy = await this.proxyManager.getWorkingProxy()
-      if (workingProxy) {
-        const proxyServer = `${workingProxy.protocol}://${workingProxy.host}:${workingProxy.port}`
-        browserArgs.push(`--proxy-server=${proxyServer}`)
-        logger.info(`Using tested proxy: ${proxyServer}`)
+    // Set proxy server - use local proxy server for authenticated HTTP proxies
+    if (this.currentWorkingProxy) {
+      if (this.currentWorkingProxy.username && this.currentWorkingProxy.password && this.currentWorkingProxy.protocol === 'http') {
+        // For authenticated HTTP proxies, use local proxy server as workaround
+        logger.debug(`Starting local proxy server for authenticated HTTP proxy...`)
+        this.localProxyServer = new LocalProxyServer({
+          host: this.currentWorkingProxy.host,
+          port: this.currentWorkingProxy.port,
+          username: this.currentWorkingProxy.username,
+          password: this.currentWorkingProxy.password,
+          protocol: this.currentWorkingProxy.protocol,
+        })
+        
+        // Listen for proxy ban events - mark proxy as failed
+        this.localProxyServer.on('proxy-banned', () => {
+          logger.warn(`⚠️  Proxy authentication failed (403) - will retry without proxy`)
+          this.currentWorkingProxy = null
+        })
+        
+        // Listen for connection refused events
+        this.localProxyServer.on('proxy-connection-refused', () => {
+          logger.warn(`⚠️  Proxy connection refused - will retry without proxy`)
+          this.currentWorkingProxy = null
+        })
+        
+        const localPort = await this.localProxyServer.start()
+        browserArgs.push(`--proxy-server=127.0.0.1:${localPort}`)
+        logger.debug(`Using local proxy server on port ${localPort} (forwarding to ${this.currentWorkingProxy.host}:${this.currentWorkingProxy.port})`)
+      } else if (this.currentWorkingProxy.protocol === 'socks5' || this.currentWorkingProxy.protocol === 'socks4') {
+        // Debug: Check if credentials are parsed
+        logger.debug(`SOCKS proxy details: host=${this.currentWorkingProxy.host}, port=${this.currentWorkingProxy.port}, username=${this.currentWorkingProxy.username ? '***' : 'none'}, password=${this.currentWorkingProxy.password ? '***' : 'none'}`)
+        
+        // For authenticated SOCKS proxies, use local proxy server (similar to HTTP)
+        if (this.currentWorkingProxy.username && this.currentWorkingProxy.password) {
+          logger.debug(`Starting local SOCKS proxy server for authenticated SOCKS proxy...`)
+          this.localProxyServer = new LocalProxyServer({
+            host: this.currentWorkingProxy.host,
+            port: this.currentWorkingProxy.port,
+            username: this.currentWorkingProxy.username,
+            password: this.currentWorkingProxy.password,
+            protocol: this.currentWorkingProxy.protocol,
+          })
+          
+          // Listen for proxy ban events
+          this.localProxyServer.on('proxy-banned', () => {
+            logger.warn(`⚠️  SOCKS proxy authentication failed (403) - will retry without proxy`)
+            this.currentWorkingProxy = null
+          })
+          
+          // Listen for connection refused events
+          this.localProxyServer.on('proxy-connection-refused', () => {
+            logger.warn(`⚠️  SOCKS proxy connection refused - will retry without proxy`)
+            this.currentWorkingProxy = null
+          })
+          
+          const localPort = await this.localProxyServer.start()
+          // Use SOCKS5 format for local proxy (Chrome supports non-authenticated SOCKS5)
+          browserArgs.push(`--proxy-server=socks5://127.0.0.1:${localPort}`)
+          logger.debug(`Using local SOCKS proxy server on port ${localPort} (forwarding to ${this.currentWorkingProxy.host}:${this.currentWorkingProxy.port})`)
+        } else {
+          // For non-authenticated SOCKS proxies, use directly
+          const proxyServer = `${this.currentWorkingProxy.protocol}://${this.currentWorkingProxy.host}:${this.currentWorkingProxy.port}`
+          browserArgs.push(`--proxy-server=${proxyServer}`)
+          logger.debug(`Using SOCKS proxy: ${proxyServer}`)
+        }
       } else {
-        logger.warn("No working proxy found, proceeding without proxy")
+        // For non-authenticated HTTP/HTTPS proxies
+        // Option: Use local proxy server for better error detection (optional, Chrome can handle directly)
+        // For now, use directly - Chrome handles non-authenticated proxies natively
+        const proxyServer = `${this.currentWorkingProxy.protocol}://${this.currentWorkingProxy.host}:${this.currentWorkingProxy.port}`
+        browserArgs.push(`--proxy-server=${proxyServer}`)
+        logger.debug(`Using proxy server: ${proxyServer}`)
+        logger.debug(`Note: Non-authenticated HTTP proxies don't need forwarding - Chrome handles them directly`)
       }
     }
 
@@ -188,26 +295,41 @@ export class CrossfireReferralBot {
     })
 
     this.page.on("dialog", async (dialog) => {
-      logger.info(`JavaScript dialog detected: ${dialog.message()}`)
+      const message = dialog.message()
+      logger.debug(`JavaScript dialog detected: ${message}`)
+      
+      // Check if this is the "pass the flame" dialog (last dialog)
+      // Exact message: "Confirm Passing the Flame with the player who shared this link? (You can only pass the flame with one player.)"
+      const isFlameDialog = message.includes("Confirm Passing the Flame") || 
+                            message.includes("Passing the Flame") ||
+                            message.toLowerCase().includes("pass the flame") ||
+                            message.toLowerCase().includes("passing the flame")
+      
+      if (isFlameDialog) {
+        // Log immediately when detected (before accepting)
+        logger.super("✅ Success: Invitation Accepted")
+        logger.debug("Flame dialog detected - account creation successful!")
+      }
+      
       await dialog.accept()
-      logger.info("Dialog accepted")
+      logger.debug("Dialog accepted")
     })
 
     // Initialize secure connection manager for ALL connections (direct or proxy)
     if (this.config.enableSecureConnection) {
-      this.secureConnectionManager = new SecureConnectionManager({
-        enableCertificatePinning: true,
-        enableClientCertificates: this.config.enableClientCertificates,
-        allowedNetworks: this.config.allowedNetworks,
-        blockedNetworks: this.config.blockedNetworks,
-        tlsFingerprintCheck: true,
-        maxTlsVersion: "TLSv1.3",
-        minTlsVersion: "TLSv1.2"
-      })
+    this.secureConnectionManager = new SecureConnectionManager({
+      enableCertificatePinning: true,
+      enableClientCertificates: this.config.enableClientCertificates,
+      allowedNetworks: this.config.allowedNetworks,
+      blockedNetworks: this.config.blockedNetworks,
+      tlsFingerprintCheck: true,
+      maxTlsVersion: "TLSv1.3",
+      minTlsVersion: "TLSv1.2"
+    })
 
-      logger.info("🔐 Secure connection manager initialized for all connections")
+      logger.debug("🔐 Secure connection manager initialized for all connections")
     } else {
-      logger.info("ℹ️  Secure connection manager disabled")
+      logger.debug("ℹ️  Secure connection manager disabled")
     }
 
     // Perform security audit for direct connections (no proxy)
@@ -216,9 +338,10 @@ export class CrossfireReferralBot {
     }
 
     // Initialize quantum proxy manager for conservative proxy usage (only when proxy is enabled)
+    // Skip for residential proxies as they handle their own rotation and security
     if (this.config.useProxy > 0 && this.proxyManager) {
       const currentProxy = this.proxyManager.getCurrentProxy()
-      if (currentProxy) {
+      if (currentProxy && !currentProxy.host.includes('scrapeops') && !currentProxy.host.includes('residential-proxy')) {
         this.quantumProxyManager = new QuantumProxyManager('act.playcfl.com')
 
         // Configure security features
@@ -246,7 +369,7 @@ export class CrossfireReferralBot {
 
         this.quantumProxyManager.initializeQuantumConnection(quantumConfig).then(async (success) => {
           if (success) {
-            logger.info('⚛️  Quantum proxy initialized - proxy conserved for target site only')
+            logger.debug('⚛️  Quantum proxy initialized - proxy conserved for target site only')
 
             // Start keep-alive pinging to maintain proxy connection
             this.quantumProxyManager!.startKeepAlive()
@@ -254,7 +377,7 @@ export class CrossfireReferralBot {
             // Perform security audit
             try {
               const audit = await this.quantumProxyManager!.performSecurityAudit()
-              logger.info(`🔒 Security Audit: Score ${audit.score}/100 (${audit.riskLevel} risk)`)
+              logger.debug(`🔒 Security Audit: Score ${audit.score}/100 (${audit.riskLevel} risk)`)
               if (audit.vulnerabilities.length > 0) {
                 logger.warn(`⚠️  Security issues: ${audit.vulnerabilities.join(', ')}`)
               }
@@ -267,6 +390,8 @@ export class CrossfireReferralBot {
         }).catch(error => {
           logger.warn(`⚠️  Quantum proxy error: ${error}`)
         })
+      } else if (currentProxy && (currentProxy.host.includes('scrapeops') || currentProxy.host.includes('residential-proxy'))) {
+        logger.debug('ℹ️  Using residential proxy - Quantum proxy manager skipped for compatibility')
       }
     }
 
@@ -277,13 +402,17 @@ export class CrossfireReferralBot {
           username: currentProxy.username,
           password: currentProxy.password,
         })
-        logger.info("Proxy authentication configured")
+        logger.debug("Proxy authentication configured")
       }
     }
 
     logger.success("Fresh browser launched successfully")
   }
 
+  /**
+   * Navigates to the referral page with automatic proxy error recovery
+   * @throws Error if navigation fails after all retry attempts
+   */
   async navigateToReferralPage(): Promise<void> {
     if (!this.page) throw new Error("Browser not initialized")
 
@@ -298,7 +427,87 @@ export class CrossfireReferralBot {
         timeout: navigationTimeout,
       })
       logger.success("Page loaded successfully")
-    } catch (error) {
+    } catch (error: any) {
+      // Log the actual error for debugging
+      const errorMessage = error?.message || ""
+      logger.debug(`Navigation error: ${errorMessage}`)
+      
+      // Check if error is due to proxy failure
+      const isProxyError = errorMessage.includes("ERR_TUNNEL_CONNECTION_FAILED") || 
+                         errorMessage.includes("ERR_PROXY_CONNECTION_FAILED") ||
+                         errorMessage.includes("ERR_EMPTY_RESPONSE") ||
+                         errorMessage.includes("ERR_NO_SUPPORTED_PROXIES") ||
+                         errorMessage.includes("ERR_SOCKS_CONNECTION_FAILED") ||
+                         errorMessage.includes("ERR_PROXY_AUTH_REQUESTED") ||
+                         errorMessage.includes("ERR_PROXY_CERTIFICATE_INVALID") ||
+                         errorMessage.includes("ECONNREFUSED") ||
+                         errorMessage.includes("ETIMEDOUT") ||
+                         errorMessage.includes("timeout") ||
+                         errorMessage.includes("403")
+      
+      // Check if it's a connection error (proxy doesn't work) vs timeout (proxy might be slow)
+      const isConnectionError = errorMessage.includes("ERR_TUNNEL_CONNECTION_FAILED") || 
+                               errorMessage.includes("ERR_PROXY_CONNECTION_FAILED") ||
+                               errorMessage.includes("ERR_EMPTY_RESPONSE") ||
+                               errorMessage.includes("ERR_NO_SUPPORTED_PROXIES") ||
+                               errorMessage.includes("ERR_SOCKS_CONNECTION_FAILED") ||
+                               errorMessage.includes("ECONNREFUSED")
+      
+      const isTimeout = errorMessage.includes("timeout") || errorMessage.includes("ETIMEDOUT")
+      
+      // For timeouts with proxy, might be slow proxy - try retry first before giving up
+      if (isTimeout && this.currentWorkingProxy && !isConnectionError) {
+        logger.warn(`⚠️  Navigation timeout with proxy (proxy might be slow). Will retry with longer timeout...`)
+        // Don't restart yet, let it retry with longer timeout below
+      } else if (isConnectionError && this.currentWorkingProxy) {
+        logger.warn(`⚠️  Proxy connection failed during initial navigation: ${errorMessage.substring(0, 100)}`)
+        if (this.currentWorkingProxy.username && this.currentWorkingProxy.password) {
+          logger.warn(`   Authenticated proxy failed - this is expected if proxy credentials are invalid or proxy is blocked`)
+        } else {
+          logger.warn(`   Non-authenticated proxy failed - proxy is likely dead/unreliable (common with free proxies)`)
+          logger.warn(`   Note: Non-authenticated HTTP proxies don't need forwarding - Chrome handles them directly`)
+        }
+        logger.warn(`   Restarting browser without proxy...`)
+        
+        // Stop local proxy server if running
+        if (this.localProxyServer) {
+          await this.localProxyServer.stop()
+          this.localProxyServer = null
+        }
+        
+        // Clear proxy and set flag to skip proxy on restart
+        this.currentWorkingProxy = null
+        this.skipProxyOnRestart = true
+        
+        // Close current browser
+        if (this.browser) {
+          try {
+            await this.browser.close()
+            this.browser = null
+            this.page = null
+          } catch (e) {
+            logger.debug(`Error closing browser: ${e}`)
+          }
+        }
+        
+        // Relaunch browser without proxy
+        logger.debug("Relaunching browser without proxy configuration...")
+        await this.launchFreshBrowser()
+        
+        // Retry navigation without proxy
+        try {
+          await this.page!.goto(referralUrl, {
+            waitUntil: "domcontentloaded",
+            timeout: navigationTimeout * 2,
+          })
+          logger.success("Page loaded successfully without proxy")
+          return
+        } catch (directError) {
+          logger.error("Navigation failed even without proxy")
+          throw directError
+        }
+      }
+      
       logger.warn("Initial navigation timed out, retrying with longer timeout...")
 
       try {
@@ -307,9 +516,65 @@ export class CrossfireReferralBot {
           timeout: navigationTimeout * 1.5,
         })
         logger.success("Page loaded (DOM ready)")
-      } catch (retryError) {
+      } catch (retryError: any) {
+        // Check if error is due to proxy failure (403/connection refused/empty response/unsupported)
+        const errorMessage = retryError?.message || ""
+        const isProxyError = errorMessage.includes("ERR_TUNNEL_CONNECTION_FAILED") || 
+                           errorMessage.includes("ERR_PROXY_CONNECTION_FAILED") ||
+                           errorMessage.includes("ERR_EMPTY_RESPONSE") ||
+                           errorMessage.includes("ERR_NO_SUPPORTED_PROXIES") ||
+                           errorMessage.includes("ERR_SOCKS_CONNECTION_FAILED") ||
+                           errorMessage.includes("ECONNREFUSED") ||
+                           errorMessage.includes("403")
+        
+        if (isProxyError && this.currentWorkingProxy) {
+          if (errorMessage.includes("ERR_NO_SUPPORTED_PROXIES")) {
+            logger.warn(`⚠️  Chrome doesn't support authenticated SOCKS5 proxies. Restarting browser without proxy...`)
+          } else {
+            logger.warn(`⚠️  Proxy connection failed. Restarting browser without proxy...`)
+          }
+          
+          // Stop local proxy server if running
+          if (this.localProxyServer) {
+            await this.localProxyServer.stop()
+            this.localProxyServer = null
+          }
+          
+          // Clear proxy and set flag to skip proxy on restart
+          this.currentWorkingProxy = null
+          this.skipProxyOnRestart = true
+          
+          // Close current browser
+          if (this.browser) {
+            try {
+              await this.browser.close()
+              this.browser = null
+              this.page = null
+            } catch (e) {
+              logger.debug(`Error closing browser: ${e}`)
+            }
+          }
+          
+          // Relaunch browser without proxy
+          logger.debug("Relaunching browser without proxy configuration...")
+          await this.launchFreshBrowser()
+          
+          // Retry navigation without proxy
+          try {
+            await this.page!.goto(referralUrl, {
+              waitUntil: "domcontentloaded",
+              timeout: navigationTimeout * 2,
+            })
+            logger.success("Page loaded successfully without proxy")
+            return
+          } catch (directError) {
+            logger.error("Navigation failed even without proxy")
+            throw directError
+          }
+        }
+        
         if (this.proxyManager) {
-          logger.info("Attempting proxy recovery...")
+          logger.debug("Attempting proxy recovery...")
           const recovered = await this.performAdvancedProxyRecovery()
           if (recovered) {
             await this.page.goto(referralUrl, {
@@ -328,7 +593,7 @@ export class CrossfireReferralBot {
   }
 
   private async performAdvancedProxyRecovery(): Promise<boolean> {
-    logger.info("Performing advanced proxy recovery...")
+    logger.debug("Performing advanced proxy recovery...")
     if (this.proxyManager) {
       await this.proxyManager.switchToNextProxy()
       return true
@@ -336,6 +601,13 @@ export class CrossfireReferralBot {
     return false
   }
 
+  /**
+   * Performs the complete registration process:
+   * - Fills registration form
+   * - Handles email verification
+   * - Sets password
+   * - Handles post-registration dialogs
+   */
   async performRegistration(): Promise<void> {
     if (!this.page) throw new Error("Browser not initialized")
 
@@ -358,16 +630,16 @@ export class CrossfireReferralBot {
       await this.proxyAwareDelay(4000)
 
       // Check for registration form elements
-      logger.info("Checking for registration form elements...")
+      logger.debug("Checking for registration form elements...")
       try {
         const registerButtonExists = await this.page.$(`.login-goRegister__button`)
         const emailInputExists = await this.page.$(`input[type="email"]`)
 
-        logger.info(`Register button found: ${!!registerButtonExists}`)
-        logger.info(`Email input found: ${!!emailInputExists}`)
+        logger.debug(`Register button found: ${!!registerButtonExists}`)
+        logger.debug(`Email input found: ${!!emailInputExists}`)
 
         if (!registerButtonExists || !emailInputExists) {
-          logger.info("Registration form elements not ready, waiting longer...")
+          logger.debug("Registration form elements not ready, waiting longer...")
           await this.proxyAwareDelay(3000)
         }
       } catch (debugError) {
@@ -379,19 +651,19 @@ export class CrossfireReferralBot {
 
       const formReady = await registrationHandler.waitForRegistrationForm()
       if (!formReady) {
-        logger.info("Attempting proxy recovery due to form loading failure...")
+        logger.debug("Attempting proxy recovery due to form loading failure...")
         const recovered = await this.performAdvancedProxyRecovery()
         if (recovered) {
-          logger.info("Proxy recovered, restarting registration process...")
+          logger.debug("Proxy recovered, restarting registration process...")
           return await this.performRegistration()
         }
         return
       }
 
-      logger.info("Filling registration form...")
+      logger.debug("Filling registration form...")
       await registrationHandler.fillRegistrationEmail()
 
-      logger.info("Waiting for email validation...")
+      logger.debug("Waiting for email validation...")
       await delay(2000)
 
       const hasEmailError = await this.page.$(".infinite-form-item-has-error #registerForm_account")
@@ -401,8 +673,8 @@ export class CrossfireReferralBot {
         logger.success("Email validation passed")
       }
 
-      logger.info("Registration form ready, proceeding to verification step...")
-      logger.info("Skipping password fields in first step - will be filled after email verification")
+      logger.debug("Registration form ready, proceeding to verification step...")
+      logger.debug("Skipping password fields in first step - will be filled after email verification")
 
       await registrationHandler.clickRegistrationSubmit()
 
@@ -410,14 +682,14 @@ export class CrossfireReferralBot {
       await this.handleVerificationStep()
 
       // Check for post-registration alerts
-      logger.info("Checking for post-registration alerts...")
+      logger.debug("Checking for post-registration alerts...")
       await this.handlePostRegistrationAlerts()
 
-      logger.success("Registration process completed")
+      logger.successForce("Registration process completed")
     } catch (error) {
       logger.error(`Error during registration: ${error}`)
       await this.page.screenshot({ path: "error-screenshot.png", fullPage: true })
-      logger.info("Error screenshot saved as error-screenshot.png")
+      logger.debug("Error screenshot saved as error-screenshot.png")
     }
   }
 
@@ -443,12 +715,32 @@ export class CrossfireReferralBot {
         logger.warn("Verification form elements not found, continuing...")
       }
 
-      const codeRequested = await verificationHandler.clickGetCodeButton()
-      if (!codeRequested) return
+      // Check if we already have a verification code before clicking Get code button
+      logger.debug("Checking for existing verification code...")
+      const existingCode = await verificationHandler.checkExistingVerificationCode()
+      if (existingCode) {
+        logger.info("Verification code already available, skipping Get code button click")
+        const codeFilled = await verificationHandler.fillVerificationCode(existingCode)
+        if (!codeFilled) return
+      } else {
+        // No existing code, click the Get code button
+        const codeRequested = await verificationHandler.clickGetCodeButton()
+        if (!codeRequested) return
 
-      // Stabilization after Get code click
-      logger.info("Stabilizing after Get code click...")
-      await delay(4000)
+        // Stabilization after Get code click
+        logger.debug("Stabilizing after Get code click...")
+        await delay(4000)
+
+        // Wait for the verification code
+        const verificationCode = await verificationHandler.waitForVerificationCode()
+        if (!verificationCode) {
+          logger.error("Could not retrieve verification code - stopping process")
+          return
+        }
+
+        const codeFilled = await verificationHandler.fillVerificationCode(verificationCode)
+        if (!codeFilled) return
+      }
 
       // Final check that verification elements are still present
       const verificationInput = await this.page.waitForSelector('input[placeholder*="Verification code"]', {
@@ -463,7 +755,7 @@ export class CrossfireReferralBot {
 
       if (passwordField) {
         logger.warn("Password fields appeared prematurely - page may have auto-transitioned")
-        logger.info("Attempting to return to verification step...")
+        logger.debug("Attempting to return to verification step...")
 
         await this.page.evaluate(() => {
           const verificationInput = document.querySelector('input[placeholder*="Verification code"]')
@@ -476,7 +768,7 @@ export class CrossfireReferralBot {
         await delay(2000)
       }
 
-      logger.info("Verification page stable, waiting for email...")
+      logger.debug("Verification page stable, waiting for email...")
 
       const verificationCode = await verificationHandler.waitForVerificationCode()
       if (!verificationCode) {
@@ -504,7 +796,7 @@ export class CrossfireReferralBot {
         logger.super("REGISTRATION COMPLETED SUCCESSFULLY!")
         logger.success(`Account created with email: ${this.currentEmail}`)
 
-        logger.info("Saving account to valid.txt...")
+        logger.debug("Saving account to valid.txt...")
         saveSuccessfulAccount(this.currentEmail, this.sessionPassword)
       }
 
@@ -512,12 +804,16 @@ export class CrossfireReferralBot {
     } catch (error) {
       logger.error(`Error during verification step: ${error}`)
       await this.page.screenshot({ path: "verification-error.png", fullPage: true })
-      logger.info("Verification error screenshot saved")
+      logger.debug("Verification error screenshot saved")
     }
   }
 
+  /**
+   * Handles post-registration JavaScript dialogs (flame dialog, invitation accepted)
+   * @returns true if should close immediately (flame dialog detected), false otherwise
+   */
   async handlePostRegistrationAlerts(): Promise<void> {
-    logger.info("Monitoring for post-registration alerts...")
+    logger.debug("Monitoring for post-registration alerts...")
 
     let flameDialogAccepted = false
     let invitationDialogHandled = false
@@ -526,27 +822,52 @@ export class CrossfireReferralBot {
     try {
       this.page!.on("dialog", async (dialog) => {
         const message = dialog.message()
-        logger.info(`Post-registration alert detected: "${message}"`)
+        logger.debug(`Post-registration alert detected: "${message}"`)
 
-        if (message.includes("Confirm Passing the Flame") || message.includes("Passing the Flame")) {
+        // Check if this is the "pass the flame" dialog (last dialog)
+        // Exact message: "Confirm Passing the Flame with the player who shared this link? (You can only pass the flame with one player.)"
+        const isFlameDialog = message.includes("Confirm Passing the Flame") ||
+                              message.includes("Passing the Flame") ||
+                              message.toLowerCase().includes("pass the flame") ||
+                              message.toLowerCase().includes("passing the flame")
+
+        if (isFlameDialog) {
           flameDialogAccepted = true
-          logger.success("Flame dialog detected - account creation successful!")
+          logger.debug("Flame dialog detected - account creation successful!")
+          // Log immediately when detected (before accepting)
+          logger.super("✅ Success: Invitation Accepted")
         }
 
-        if (message.includes("Invitation accepted")) {
+        if (message.includes("Invitation accepted") || message.toLowerCase().includes("invitation accepted")) {
           invitationDialogHandled = true
-          logger.success("Invitation dialog handled - registration complete!")
+          logger.info("Invitation dialog handled - registration complete!")
         }
 
-        logger.info("Auto-accepting post-registration alert")
+        logger.debug("Auto-accepting post-registration alert")
 
         try {
           await dialog.accept()
 
-          if (flameDialogAccepted && invitationDialogHandled && !accountSaved) {
+          // If this is the flame dialog (last dialog), save account
+          if (isFlameDialog) {
+            // Save account if not already saved
+            if (!accountSaved) {
+              accountSaved = true
+              saveSuccessfulAccount(this.currentEmail, this.sessionPassword)
+            }
+
+            // Log the most important success message (using SUPER for unique/rare logs)
+            logger.super("✅ Success: Invitation Accepted")
+            logger.info("Registration completed successfully!")
+          } else if (flameDialogAccepted && invitationDialogHandled && !accountSaved) {
             accountSaved = true
-            logger.info("Both success dialogs handled - saving account to valid.txt")
+            logger.debug("Both success dialogs handled - saving account to valid.txt")
             saveSuccessfulAccount(this.currentEmail, this.sessionPassword)
+          }
+
+          // Also check if this dialog contains "invitation" or "accepted" even if not flame dialog
+          if (!isFlameDialog && (message.toLowerCase().includes("invitation") || message.toLowerCase().includes("accepted"))) {
+            logger.super("✅ Success: Invitation Accepted")
           }
         } catch (acceptError) {
           logger.warn("Dialog was already handled or closed")
@@ -556,14 +877,14 @@ export class CrossfireReferralBot {
       })
 
       const alertDelay = this.proxyManager?.getCurrentProxy() ? 15000 : 8000
-      logger.info(`Waiting ${alertDelay / 1000}s for post-registration JS alerts...`)
+      logger.debug(`Waiting ${alertDelay / 1000}s for post-registration JS alerts...`)
       await delay(alertDelay)
 
-      logger.info("Extra wait for any delayed alerts...")
+      logger.debug("Extra wait for any delayed alerts...")
       await delay(5000)
 
       if (!accountSaved) {
-        logger.info("Checking for successful registration completion...")
+        logger.debug("Checking for successful registration completion...")
         try {
           const currentUrl = this.page!.url()
           if (
@@ -581,13 +902,13 @@ export class CrossfireReferralBot {
         }
       }
     } catch (error) {
-      logger.info("No post-registration alerts detected")
+      logger.debug("No post-registration alerts detected")
     }
   }
 
   private async performDirectConnectionSecurityAudit(): Promise<void> {
     try {
-      logger.info("🔍 Performing direct connection security audit...")
+      logger.debug("🔍 Performing direct connection security audit...")
 
       const targetDomain = "act.playcfl.com"
       const targetPort = 443
@@ -639,7 +960,7 @@ export class CrossfireReferralBot {
       else if (securityScore >= 50) riskLevel = "High"
       else riskLevel = "Critical"
 
-      logger.info(`🔒 Direct Connection Security Audit: Score ${securityScore}/100 (${riskLevel} risk)`)
+      logger.debug(`🔒 Direct Connection Security Audit: Score ${securityScore}/100 (${riskLevel} risk)`)
 
       if (vulnerabilities.length > 0) {
         logger.warn(`⚠️  Security issues: ${vulnerabilities.join(', ')}`)
@@ -658,22 +979,102 @@ export class CrossfireReferralBot {
     }
   }
 
+  /**
+   * Closes browser and cleans up all resources (proxy servers, connections)
+   */
   async close(): Promise<void> {
-    // Clean up quantum proxy manager
-    if (this.quantumProxyManager) {
-      this.quantumProxyManager.stopKeepAlive()
-      await this.quantumProxyManager.cleanup()
-    }
+    logger.debug("Starting browser cleanup...")
 
-    // Note: SecureConnectionManager doesn't have a cleanup method
-    // It manages its own lifecycle
+    try {
+      // Clean up quantum proxy manager
+      if (this.quantumProxyManager) {
+        logger.debug("Stopping quantum proxy manager...")
+        this.quantumProxyManager.stopKeepAlive()
+        try {
+          await Promise.race([
+            this.quantumProxyManager.cleanup(),
+            new Promise((_, reject) =>
+              setTimeout(() => reject(new Error('Quantum proxy cleanup timeout')), 5000)
+            )
+          ])
+          logger.debug("Quantum proxy manager cleaned up")
+        } catch (proxyError) {
+          logger.warn(`Quantum proxy cleanup failed: ${proxyError}`)
+        }
+      }
 
-    if (this.browser) {
-      logger.info("Closing browser...")
-      await this.browser.close()
+      // Clean up local proxy server
+      if (this.localProxyServer) {
+        logger.debug("Stopping local proxy server...")
+        try {
+          await Promise.race([
+            this.localProxyServer.stop(),
+            new Promise((_, reject) =>
+              setTimeout(() => reject(new Error('Local proxy server stop timeout')), 10000)
+            )
+          ])
+          logger.debug("Local proxy server stopped")
+        } catch (proxyError) {
+          logger.warn(`Local proxy server stop failed: ${proxyError}`)
+        }
+      }
+
+      // Note: SecureConnectionManager doesn't have a cleanup method
+      // It manages its own lifecycle
+
+      if (this.browser) {
+        logger.debug("Closing browser...")
+        try {
+          await Promise.race([
+            this.browser.close(),
+            new Promise((_, reject) =>
+              setTimeout(() => reject(new Error('Browser close timeout')), 15000) // Increased timeout for proxy
+            )
+          ])
+          logger.debug("Browser closed successfully")
+        } catch (browserError) {
+          logger.warn(`Browser close failed: ${browserError}`)
+          // Force close browser if normal close fails
+          try {
+            this.browser.close()
+            logger.debug("Browser force-closed")
+          } catch (forceError) {
+            logger.error(`Browser force close also failed: ${forceError}`)
+          }
+        }
+      }
+    } catch (error) {
+      logger.warn(`Error during cleanup: ${error}`)
+      // Force close browser if normal close fails
+      if (this.browser) {
+        try {
+          this.browser.close()
+        } catch (forceError) {
+          logger.error(`Force close also failed: ${forceError}`)
+        }
+      }
+    } finally {
+      // Ensure all references are cleared to prevent memory leaks
+      this.browser = null
+      this.page = null
+
+      // Clear proxy-related references
+      if (this.proxyManager) {
+        // Note: Don't set proxyManager to null as it might be reused
+        logger.debug("Proxy manager reference maintained for reuse")
+      }
+
+      // Clear email service reference
+      this.currentEmail = ""
+
+      logger.debug("Cleanup completed")
     }
   }
 
+  /**
+   * Main execution method - runs the complete bot workflow
+   * Creates temp email, launches browser, performs registration, and handles cleanup
+   */
   async run(): Promise<void> {
     try {
       // Step 1: Create temp email
@@ -682,7 +1083,7 @@ export class CrossfireReferralBot {
 
       if (tempEmail) {
         this.currentEmail = tempEmail.email_addr
-        logger.info(`Using fresh email: ${this.currentEmail}`)
+        logger.success(`Using fresh email: ${this.currentEmail}`)
       }
 
       // Step 2: Launch browser
@@ -694,22 +1095,33 @@ export class CrossfireReferralBot {
       await this.navigateToReferralPage()
       await this.performRegistration()
 
-      const finalDelay = this.proxyManager?.getCurrentProxy() ? 20000 : 10000
-      logger.info(`Keeping browser open for ${finalDelay / 1000}s final verification and JS alerts...`)
+      // Use longer delay when using proxy for final verification
+      const isUsingProxy = !!this.proxyManager?.getCurrentProxy()
+      const finalDelay = isUsingProxy ? 6000 : 3000 // 6s for proxy, 3s for direct
+      logger.info(`Keeping browser open for ${finalDelay / 1000}s final verification and JS alerts...${isUsingProxy ? ' (using proxy - extended delay)' : ''}`)
       await delay(finalDelay)
     } catch (error) {
       logger.error(`Bot execution failed: ${error}`)
       if (this.page) {
         try {
           await this.page.screenshot({ path: "fatal-error.png", fullPage: true })
-          logger.info("Fatal error screenshot saved as fatal-error.png")
+          logger.debug("Fatal error screenshot saved as fatal-error.png")
         } catch (e) {
           logger.warn("Could not save error screenshot")
         }
       }
     } finally {
       await this.close()
-      logger.info("Browser cleanup completed - fresh session ready for next run")
+      logger.debug("Browser cleanup completed - fresh session ready for next run")
+
+      // Force exit to ensure process terminates
+      // Use longer timeout for proxy connections which may have lingering network activity
+      const exitDelay = this.proxyManager?.getCurrentProxy() ? 2000 : 1000
+      setTimeout(() => {
+        logger.debug("Force exiting process...")
+        // Use process.exit(0) for clean exit, don't use SIGTERM as it may not work reliably
+        process.exit(0)
+      }, exitDelay)
     }
   }
 }
