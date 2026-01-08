@@ -24,6 +24,7 @@ export class VerificationHandler {
   private proxyManager: ProxyManager | null
   private emailService: EmailService
   private config: any
+  private hasRequestedCode: boolean = false
 
   /**
    * Creates a new VerificationHandler instance
@@ -51,23 +52,34 @@ export class VerificationHandler {
     await delay(adjustedDelay)
   }
 
+  /**
+   * Resets the verification state for a new session
+   * Allows Get code button to be clicked again
+   */
+  resetVerificationState(): void {
+    this.hasRequestedCode = false
+    logger.debug("Verification state reset - Get code button can be clicked again")
+  }
+
+  /**
+   * Checks if verification process is already complete
+   * @returns Promise<boolean> - true if verification appears to be complete
+   */
 
   async clickGetCodeButton(): Promise<boolean> {
+    // Prevent clicking Get code button multiple times in the same session
+    if (this.hasRequestedCode) {
+      logger.info("🚫 Get code button already clicked this session, preventing duplicate clicks")
+      return true // Return true to indicate success (we don't need to click again)
+    }
+
     try {
       await this.page.waitForSelector('input[placeholder*="Verification code"], ._1egsyt72', {
         timeout: this.getProxyAwareTimeout(5000),
       })
 
       // Check if verification code is already filled - ROBUST SAFEGUARD
-      const inputSelectors = [
-        'input[placeholder*="Verification code"]',
-        'input[placeholder*="verification"]',
-        'input[placeholder*="code"]',
-        'input[type="text"]:not([placeholder*="email"])',
-        'input[placeholder*="Verification"]',
-        'input[name*="code"]',
-        'input[id*="code"]'
-      ]
+      const inputSelectors = ['input[placeholder*="Verification code"]']
 
       for (const selector of inputSelectors) {
         try {
@@ -76,14 +88,14 @@ export class VerificationHandler {
             const existingValue = await this.page.evaluate((el: any) => el.value || "", inputElement)
             const isVisible = await this.page.evaluate((el: any) => {
               const style = window.getComputedStyle(el)
-              return style.display !== 'none' && style.visibility !== 'hidden' && el.offsetWidth > 0
+              return style.display !== "none" && style.visibility !== "hidden" && el.offsetWidth > 0
             }, inputElement)
 
-            logger.debug(`Input check [${selector}]: value="${existingValue}" (${existingValue.length} chars), visible=${isVisible}`)
-
             if (existingValue && existingValue.length >= 4 && isVisible) {
-              logger.info(`🚫 VERIFICATION CODE ALREADY FILLED (${existingValue.length} chars: "${existingValue}"), BLOCKING GET CODE BUTTON CLICK`)
-              return true // Consider this successful since code is already there
+              logger.info(
+                `🚫 VERIFICATION CODE ALREADY FILLED (${existingValue.length} chars: "${existingValue}"), BLOCKING GET CODE BUTTON CLICK`,
+              )
+              return true
             }
           }
         } catch (error) {
@@ -95,17 +107,10 @@ export class VerificationHandler {
 
       logger.info("Verification code input and Get code button found")
     } catch (e) {
-      logger.warn("Verification code input not found, taking screenshot...")
-      await this.page.screenshot({ path: "verification-form-error.png", fullPage: true })
+      logger.warn("Verification code input not found")
     }
 
-    const getCodeSelectors = [
-      "button._1egsyt72",
-      "._1egsyt72",
-      "div._1egsyt70 button",
-      ".infinite-btn-primary",
-      'button[type="button"]',
-    ]
+    const getCodeSelectors = ["button._1egsyt72"]
 
     for (const selector of getCodeSelectors) {
       try {
@@ -117,11 +122,54 @@ export class VerificationHandler {
             buttonText.toLowerCase().includes("send code") ||
             buttonText.toLowerCase().includes("send")
           ) {
+            // Check if button has already been clicked to prevent persistent clicking
+            const isAlreadyClicked = await this.page.evaluate((el) => {
+              if ((el as any).dataset.clicked) {
+                return true
+              }
+              return false
+            }, button)
+
+            if (isAlreadyClicked) {
+              logger.info(`🚫 "Get code" button already clicked, skipping to prevent persistent clicking`)
+              return true
+            }
+
             const scrollBefore = await this.page.evaluate(() => window.scrollY)
+
+            // Mark button as clicked to prevent future clicks
+            await this.page.evaluate((el) => {
+              ;(el as any).dataset.clicked = "true"
+            }, button)
+
             await button.click()
             logger.info(`Clicked "Get code" button: ${selector}`)
+            this.hasRequestedCode = true // Mark that we've requested a code this session
+
+            // Set timeout to automatically reset hasRequestedCode if no code is received within 5 minutes
+            // This prevents the flag from staying true forever if email delivery fails
+            setTimeout(
+              () => {
+                if (this.hasRequestedCode) {
+                  this.hasRequestedCode = false
+                  logger.debug("Auto-reset hasRequestedCode flag after 5 minutes (no code received)")
+                }
+              },
+              5 * 60 * 1000,
+            ) // 5 minutes
             await this.proxyAwareDelay(1000)
             await this.proxyAwareDelay(1000)
+
+            // Set timeout to clear the clicked flag after 5 seconds if we're still in the same state
+            setTimeout(async () => {
+              try {
+                await this.page.evaluate((el) => {
+                  delete (el as any).dataset.clicked
+                }, button)
+              } catch (e) {
+                // Ignore errors if page has changed
+              }
+            }, 5000)
 
             try {
               const scrollAfter = await this.page.evaluate(() => window.scrollY)
@@ -155,9 +203,52 @@ export class VerificationHandler {
     try {
       const button = await this.page.$("button._1egsyt72")
       if (button) {
+        // Check if button has already been clicked to prevent persistent clicking
+        const isAlreadyClicked = await this.page.evaluate((el) => {
+          if ((el as any).dataset.clicked) {
+            return true
+          }
+          return false
+        }, button)
+
+        if (isAlreadyClicked) {
+          logger.info(`🚫 "Get code" button already clicked (fallback), skipping to prevent persistent clicking`)
+          return true
+        }
+
+        // Mark button as clicked to prevent future clicks
+        await this.page.evaluate((el) => {
+          ;(el as any).dataset.clicked = "true"
+        }, button)
+
         await button.click()
         logger.info('Clicked "Get code" button (fallback)')
+        this.hasRequestedCode = true // Mark that we've requested a code this session
+
+        // Set timeout to automatically reset hasRequestedCode if no code is received within 5 minutes
+        setTimeout(
+          () => {
+            if (this.hasRequestedCode) {
+              this.hasRequestedCode = false
+              logger.debug("Auto-reset hasRequestedCode flag after 5 minutes (no code received) - fallback")
+            }
+          },
+          5 * 60 * 1000,
+        ) // 5 minutes
+
         await this.proxyAwareDelay(2000)
+
+        // Set timeout to clear the clicked flag after 5 seconds if we're still in the same state
+        setTimeout(async () => {
+          try {
+            await this.page.evaluate((el) => {
+              delete (el as any).dataset.clicked
+            }, button)
+          } catch (e) {
+            // Ignore errors if page has changed
+          }
+        }, 5000)
+
         return true
       }
     } catch (e) {
@@ -173,7 +264,7 @@ export class VerificationHandler {
    * @returns Promise<string | null> - verification code or null if not received
    */
   async waitForVerificationCode(): Promise<string | null> {
-    logger.info("STEP 2: Waiting for verification code...")
+    logger.info("STEP 4: Waiting for verification code...")
 
     const originalProxySetting = this.config.useProxy
     if (this.config.useProxy === 5) {
@@ -182,6 +273,57 @@ export class VerificationHandler {
       this.config.useProxy = 0
     }
 
+    let verificationCode: string | null = null
+
+    if (this.config.smartEmailCheck) {
+      verificationCode = await this.smartWaitForEmail()
+    } else {
+      verificationCode = await this.classicWaitForEmail()
+    }
+
+    if (originalProxySetting === 5) {
+      logger.info("STABLE MODE: Restoring proxy for remaining operations")
+      this.config.useProxy = 5
+    }
+
+    return verificationCode
+  }
+
+  /**
+   * Smart email checking with adaptive timing and clean logging
+   */
+  private async smartWaitForEmail(): Promise<string | null> {
+    const startTime = Date.now()
+    const maxWaitTime = 120000 // 2 minutes max
+    let checkInterval = 1000 // Start with 1s checks
+
+    logger.info("📧 Waiting for verification email...")
+
+    while (Date.now() - startTime < maxWaitTime) {
+      const code = await this.emailService.getVerificationCode()
+      if (code) {
+        const elapsed = ((Date.now() - startTime) / 1000).toFixed(1)
+        logger.success(`📧 Email received in ${elapsed}s`)
+        this.hasRequestedCode = false
+        return code
+      }
+
+      await delay(checkInterval)
+
+      // Adaptive timing: increase interval gradually (1s -> 2s -> 3s, max 5s)
+      if (checkInterval < 5000) {
+        checkInterval = Math.min(checkInterval + 500, 5000)
+      }
+    }
+
+    logger.warn("📧 Email not received within 2 minutes")
+    return null
+  }
+
+  /**
+   * Classic email checking (original method)
+   */
+  private async classicWaitForEmail(): Promise<string | null> {
     let verificationCode: string | null = null
     let attempts = 0
     const maxAttempts = this.config.maxEmailCheckAttempts
@@ -192,12 +334,10 @@ export class VerificationHandler {
         attempts++
         logger.info(`Still waiting for verification email... (attempt ${attempts}/${maxAttempts})`)
         await delay(this.config.emailCheckInterval)
+      } else {
+        this.hasRequestedCode = false
+        logger.debug("Verification code received - Get code button can be clicked again in future sessions")
       }
-    }
-
-    if (originalProxySetting === 5) {
-      logger.info("STABLE MODE: Restoring proxy for remaining operations")
-      this.config.useProxy = 5
     }
 
     return verificationCode
@@ -235,10 +375,7 @@ export class VerificationHandler {
    */
   async fillVerificationCode(verificationCode: string): Promise<boolean> {
     const codeSelectors = [
-      'input[placeholder*="Verification code"]',
-      'input[placeholder*="verification"]',
-      'input[placeholder*="code"]',
-      'input[type="text"]:not([placeholder*="email"])',
+      'input[placeholder*="Verification code"]', // ✅ WORKING SELECTOR - Successfully filled verification code
     ]
 
     for (const selector of codeSelectors) {
@@ -271,7 +408,7 @@ export class VerificationHandler {
    * @returns Promise<boolean> - true if country selection completed
    */
   async handleCountrySelection(): Promise<boolean> {
-    logger.info("STEP 3: Checking for country/region selection...")
+    logger.info("STEP 5: Checking for country/region selection...")
 
     let countrySelected = false
     let retryCount = 0
@@ -284,13 +421,7 @@ export class VerificationHandler {
         await this.proxyAwareDelay(1000 + retryCount * 300) // Reduced initial delay
 
         const countrySelectors = [
-          "#area",
-          ".infinite-select-selector",
-          ".infinite-select",
-          "select#area",
-          '[class*="select"]',
-          'select[name*="country"]',
-          'select[name*="region"]',
+          "#area", // ✅ WORKING SELECTOR - Found and used for country selection
         ]
 
         for (const selector of countrySelectors) {
@@ -301,17 +432,21 @@ export class VerificationHandler {
 
               const selectionCheck = await this.page.evaluate(() => {
                 const selectedElements = document.querySelectorAll(
-                  '.infinite-select-selection-item, [class*="selected"], [aria-selected="true"], option[selected]'
+                  '.infinite-select-selection-item, [class*="selected"], [aria-selected="true"], option[selected]',
                 )
 
                 for (const element of selectedElements) {
-                  const text = (element as any).textContent?.trim() ||
-                              (element as any).title?.trim() ||
-                              (element as any).value?.trim()
-                  if (text && text.length > 2 &&
-                      !text.toLowerCase().includes('select') &&
-                      !text.toLowerCase().includes('choose') &&
-                      !text.toLowerCase().includes('country')) {
+                  const text =
+                    (element as any).textContent?.trim() ||
+                    (element as any).title?.trim() ||
+                    (element as any).value?.trim()
+                  if (
+                    text &&
+                    text.length > 2 &&
+                    !text.toLowerCase().includes("select") &&
+                    !text.toLowerCase().includes("choose") &&
+                    !text.toLowerCase().includes("country")
+                  ) {
                     return { isSelected: true, selectedCountry: text }
                   }
                 }
@@ -320,8 +455,12 @@ export class VerificationHandler {
                 if (selectElement) {
                   const selectedOption = (selectElement as any).options[(selectElement as any).selectedIndex]
                   const selectedText = selectedOption ? selectedOption.textContent?.toLowerCase().trim() : ""
-                  if (selectedText && selectedText.length > 2 &&
-                      !selectedText.includes('select') && !selectedText.includes('choose')) {
+                  if (
+                    selectedText &&
+                    selectedText.length > 2 &&
+                    !selectedText.includes("select") &&
+                    !selectedText.includes("choose")
+                  ) {
                     return { isSelected: true, selectedCountry: selectedOption.textContent?.trim() }
                   }
                 }
@@ -330,14 +469,30 @@ export class VerificationHandler {
               })
 
               const isUsingProxy = !!this.proxyManager?.getCurrentProxy()
+              const countryList = ["Spain", "Philippines", "Panama", "Peru", "Zambia", "Zimbabwe", "Qatar"]
+              const forceChangeCountries = ["United States", "United Kingdom"]
 
               if (selectionCheck.isSelected) {
-                if (this.config.disableCountryDropdown && !isUsingProxy) {
-                  logger.success(`Country already selected by site: ${selectionCheck.selectedCountry} (respected auto-selection)`)
+                const selectedCountry = selectionCheck.selectedCountry || ""
+                const isAllowedCountry = countryList.some((c) =>
+                  selectedCountry.toLowerCase().includes(c.toLowerCase()),
+                )
+                const mustForceChange = forceChangeCountries.some((c) =>
+                  selectedCountry.toLowerCase().includes(c.toLowerCase()),
+                )
+
+                if (isAllowedCountry && !mustForceChange) {
+                  logger.success(`Country already selected: ${selectedCountry} ✓`)
+                  countrySelected = true
+                  break
+                } else if (mustForceChange) {
+                  logger.info(`Country ${selectedCountry} requires change, selecting random country...`)
+                } else if (this.config.disableCountryDropdown && !isUsingProxy) {
+                  logger.success(`Country already selected by site: ${selectedCountry} (respected auto-selection)`)
                   countrySelected = true
                   break
                 } else {
-                  logger.info(`Country already selected (${selectionCheck.selectedCountry}) but forcing random selection...${isUsingProxy ? ' (using proxy - must select from proxy countries)' : ''}`)
+                  logger.info(`Selecting random country...`)
                 }
               } else {
                 logger.info("No country pre-selected, proceeding with dropdown selection...")
@@ -348,18 +503,16 @@ export class VerificationHandler {
               await this.proxyAwareDelay(800)
 
               // Clear existing text
-              await this.page.keyboard.down('Control')
-              await this.page.keyboard.press('a')
-              await this.page.keyboard.up('Control')
-              await this.page.keyboard.press('Backspace')
+              await this.page.keyboard.down("Control")
+              await this.page.keyboard.press("a")
+              await this.page.keyboard.up("Control")
+              await this.page.keyboard.press("Backspace")
               await this.proxyAwareDelay(200)
 
-              const countryList = ["Spain", "Philippines", "Panama", "Peru", "Zambia", "Zimbabwe", "Qatar"]
-
-              const weights = countryList.map(country => {
+              const weights = countryList.map((country) => {
                 const length = country.length
                 return Math.max(1, Math.floor(50 / Math.pow(length, 0.8)))
-              });
+              })
 
               const totalWeight = weights.reduce((sum, weight) => sum + weight, 0)
               let random = Math.random() * totalWeight
@@ -372,7 +525,7 @@ export class VerificationHandler {
                   break
                 }
               }
-              randomCountry = randomCountry || countryList.reduce((a, b) => a.length <= b.length ? a : b)
+              randomCountry = randomCountry || countryList.reduce((a, b) => (a.length <= b.length ? a : b))
 
               await this.page.keyboard.type(randomCountry, { delay: 150 })
               logger.info(`Typed country name: ${randomCountry}`)
@@ -381,13 +534,12 @@ export class VerificationHandler {
 
               const selectionResult = await this.page.evaluate((countryName) => {
                 const options = document.querySelectorAll(
-                  'li[class*="option"], [class*="dropdown"] li, .ant-select-dropdown li, .infinite-select-dropdown li'
+                  'li[class*="option"], [class*="dropdown"] li, .ant-select-dropdown li, .infinite-select-dropdown li',
                 )
 
                 for (const option of options) {
                   const text = (option as any).textContent?.trim() || ""
-                  if (text.toLowerCase().includes(countryName.toLowerCase()) ||
-                      text === countryName) {
+                  if (text.toLowerCase().includes(countryName.toLowerCase()) || text === countryName) {
                     ;(option as any).click()
                     return text
                   }
@@ -401,7 +553,7 @@ export class VerificationHandler {
                 countrySelected = true
                 await this.proxyAwareDelay(500)
               } else {
-                await this.page.keyboard.press('Enter')
+                await this.page.keyboard.press("Enter")
                 logger.success(`Selected country by Enter key: ${randomCountry}`)
                 countrySelected = true
                 await this.proxyAwareDelay(500)
@@ -409,15 +561,17 @@ export class VerificationHandler {
 
               const selectedCountryName = selectionResult || randomCountry
               try {
-                const ageCheckbox = await this.page.$('#adultAge')
+                const ageCheckbox = await this.page.$("#adultAge")
                 if (ageCheckbox) {
                   const ageCheckedAfterCountry = await this.page.evaluate((el) => (el as any).checked, ageCheckbox)
                   const ageTextAfterCountry = await this.page.evaluate((el) => {
-                    const label = (el as any).closest('label')
-                    return label ? label.textContent?.trim() : 'Unknown'
+                    const label = (el as any).closest("label")
+                    return label ? label.textContent?.trim() : "Unknown"
                   }, ageCheckbox)
 
-                  logger.debug(`After selecting ${selectedCountryName}: age checked=${ageCheckedAfterCountry}, text="${ageTextAfterCountry?.substring(0, 50)}..."`)
+                  logger.debug(
+                    `After selecting ${selectedCountryName}: age checked=${ageCheckedAfterCountry}, text="${ageTextAfterCountry?.substring(0, 50)}..."`,
+                  )
 
                   if (ageCheckedAfterCountry && !this.config.enableAgeConfirmation) {
                     logger.warn(`Age checkbox was auto-checked after selecting ${selectedCountryName}!`)
@@ -469,7 +623,9 @@ export class VerificationHandler {
     logger.info("Checking for age verification...")
 
     try {
-      const ageInput = await this.page.$('input[id*="age"]:not([placeholder*="code"]):not([placeholder*="verification"]):not([placeholder*="verify"]):not([placeholder*="otp"])')
+      const ageInput = await this.page.$(
+        'input[id*="age"]:not([placeholder*="code"]):not([placeholder*="verification"]):not([placeholder*="verify"]):not([placeholder*="otp"])',
+      )
 
       if (ageInput) {
         const age = 33
@@ -502,11 +658,11 @@ export class VerificationHandler {
 
       for (let i = 0; i < allCheckboxes.length; i++) {
         const checkbox = allCheckboxes[i]
-        const id = await this.page.evaluate((el) => (el as any).id || '', checkbox)
+        const id = await this.page.evaluate((el) => (el as any).id || "", checkbox)
         const isChecked = await this.page.evaluate((el) => (el as any).checked, checkbox)
         const labelText = await this.page.evaluate((el) => {
-          const label = el.closest('label')
-          return label ? label.textContent?.trim()?.substring(0, 30) + '...' : ''
+          const label = el.closest("label")
+          return label ? label.textContent?.trim()?.substring(0, 30) + "..." : ""
         }, checkbox)
 
         if (id) {
@@ -522,19 +678,19 @@ export class VerificationHandler {
     if (!this.config.enableAgeConfirmation) {
       try {
         await this.page.evaluate(() => {
-          const ageCheckbox = document.getElementById('adultAge') as any
+          const ageCheckbox = document.getElementById("adultAge") as any
           if (ageCheckbox) {
             ageCheckbox.checked = false
             ageCheckbox.disabled = true
 
             try {
-              Object.defineProperty(ageCheckbox, 'checked', {
+              Object.defineProperty(ageCheckbox, "checked", {
                 get: () => false,
                 set: () => false,
-                configurable: true
+                configurable: true,
               })
             } catch (e) {
-              logger.debug('Could not override checked property, using event prevention only')
+              logger.debug("Could not override checked property, using event prevention only")
             }
 
             const preventCheck = (e: any) => {
@@ -543,9 +699,9 @@ export class VerificationHandler {
               e.stopImmediatePropagation()
             }
 
-            ageCheckbox.addEventListener('change', preventCheck, true)
-            ageCheckbox.addEventListener('click', preventCheck, true)
-            ageCheckbox.addEventListener('input', preventCheck, true)
+            ageCheckbox.addEventListener("change", preventCheck, true)
+            ageCheckbox.addEventListener("click", preventCheck, true)
+            ageCheckbox.addEventListener("input", preventCheck, true)
           }
         })
         logger.info("Proactive age confirmation protection applied")
@@ -556,8 +712,8 @@ export class VerificationHandler {
 
     if (this.config.enableAgeConfirmation) {
       const requiredSelectors = [
-        "#agreedPp",    // Privacy Policy (required)
-        "#agreedTos",   // Terms of Service (required)
+        "#agreedPp", // Privacy Policy (required)
+        "#agreedTos", // Terms of Service (required)
         "#agreedAllLi", // Combined agreement (required)
       ]
 
@@ -579,7 +735,7 @@ export class VerificationHandler {
       }
 
       try {
-        const ageCheckbox = await this.page.$('#adultAge')
+        const ageCheckbox = await this.page.$("#adultAge")
         if (ageCheckbox) {
           const isChecked = await this.page.evaluate((el) => (el as any).checked, ageCheckbox)
           if (!isChecked) {
@@ -594,12 +750,8 @@ export class VerificationHandler {
       } catch (e) {
         logger.warn(`Could not check age confirmation: ${e}`)
       }
-
     } else {
-      const allowedSelectors = [
-        "#agreedAllLi",
-        "#agreedIsEmail"
-      ]
+      const allowedSelectors = ["#agreedAllLi", "#agreedIsEmail"]
 
       for (const selector of allowedSelectors) {
         try {
@@ -615,14 +767,14 @@ export class VerificationHandler {
               if (!this.config.enableAgeConfirmation) {
                 try {
                   const ageState = await this.page.evaluate(() => {
-                    const ageCheckbox = document.getElementById('adultAge') as any
+                    const ageCheckbox = document.getElementById("adultAge") as any
                     return ageCheckbox ? { checked: ageCheckbox.checked, disabled: ageCheckbox.disabled } : null
                   })
 
                   if (ageState && ageState.checked && !ageState.disabled) {
                     logger.warn(`Age confirmation auto-checked after clicking ${selector}, unchecking...`)
                     await this.page.evaluate(() => {
-                      const ageCheckbox = document.getElementById('adultAge') as any
+                      const ageCheckbox = document.getElementById("adultAge") as any
                       if (ageCheckbox) {
                         ageCheckbox.checked = false
                       }
@@ -641,15 +793,17 @@ export class VerificationHandler {
 
       for (let attempt = 0; attempt < 3; attempt++) {
         try {
-          const ageCheckbox = await this.page.$('#adultAge')
+          const ageCheckbox = await this.page.$("#adultAge")
           if (ageCheckbox) {
             const isChecked = await this.page.evaluate((el) => (el as any).checked, ageCheckbox)
             const ageText = await this.page.evaluate((el) => {
-              const label = (el as any).closest('label')
-              return label ? label.textContent?.trim() : 'Unknown'
+              const label = (el as any).closest("label")
+              return label ? label.textContent?.trim() : "Unknown"
             }, ageCheckbox)
 
-            logger.info(`Age checkbox state (attempt ${attempt + 1}): checked=${isChecked}, text="${ageText?.substring(0, 50)}..."`)
+            logger.info(
+              `Age checkbox state (attempt ${attempt + 1}): checked=${isChecked}, text="${ageText?.substring(0, 50)}..."`,
+            )
 
             if (isChecked) {
               logger.info(`Age confirmation was checked (attempt ${attempt + 1}), unchecking...`)
@@ -677,7 +831,7 @@ export class VerificationHandler {
       }
 
       try {
-        const masterCheckbox = await this.page.$('#agreedAllLi')
+        const masterCheckbox = await this.page.$("#agreedAllLi")
         if (masterCheckbox) {
           const isChecked = await this.page.evaluate((el) => (el as any).checked, masterCheckbox)
           if (isChecked) {
@@ -693,10 +847,7 @@ export class VerificationHandler {
       logger.info("Age confirmation checkbox skipped (disabled in config)")
     }
 
-    const optionalSelectors = [
-      "#agreedIsEmail",
-      "#agreedKoNightEmail"
-    ]
+    const optionalSelectors = ["#agreedIsEmail", "#agreedKoNightEmail"]
 
     for (const selector of optionalSelectors) {
       try {
@@ -732,54 +883,54 @@ export class VerificationHandler {
     if (!this.config.enableAgeConfirmation) {
       try {
         await this.page.evaluate(() => {
-          const ageCheckbox = document.getElementById('adultAge') as any
+          const ageCheckbox = document.getElementById("adultAge") as any
           if (ageCheckbox) {
             ageCheckbox.checked = false
             ageCheckbox.disabled = true
 
             try {
-              Object.defineProperty(ageCheckbox, 'checked', {
+              Object.defineProperty(ageCheckbox, "checked", {
                 get: () => false,
                 set: (value: boolean) => {
                   if (value) {
-                    console.warn('Age confirmation checkbox was attempted to be checked - blocking')
+                    console.warn("Age confirmation checkbox was attempted to be checked - blocking")
                     setTimeout(() => {
                       ageCheckbox.checked = false
                     }, 10)
                   }
                   return false
                 },
-                configurable: true
+                configurable: true,
               })
             } catch (e) {
-              console.warn('Could not configure checked property override, using event prevention only')
+              console.warn("Could not configure checked property override, using event prevention only")
             }
 
-            ageCheckbox.addEventListener('change', (e: any) => {
+            ageCheckbox.addEventListener("change", (e: any) => {
               if (ageCheckbox.checked) {
-                console.warn('Age confirmation checkbox change event blocked')
+                console.warn("Age confirmation checkbox change event blocked")
                 ageCheckbox.checked = false
                 e.preventDefault()
                 e.stopPropagation()
               }
             })
 
-            ageCheckbox.addEventListener('click', (e: any) => {
+            ageCheckbox.addEventListener("click", (e: any) => {
               if (!ageCheckbox.disabled) {
-                console.warn('Age confirmation checkbox click blocked')
+                console.warn("Age confirmation checkbox click blocked")
                 e.preventDefault()
                 e.stopPropagation()
                 ageCheckbox.checked = false
               }
             })
 
-            console.log('Age confirmation checkbox disabled and protected')
+            console.log("Age confirmation checkbox disabled and protected")
           }
         })
 
         await this.proxyAwareDelay(100)
         const finalState = await this.page.evaluate(() => {
-          const ageCheckbox = document.getElementById('adultAge') as any
+          const ageCheckbox = document.getElementById("adultAge") as any
           return ageCheckbox ? ageCheckbox.checked : null
         })
 
@@ -788,7 +939,6 @@ export class VerificationHandler {
         } else {
           logger.info("✅ Age confirmation protection successful - checkbox disabled and unchecked")
         }
-
       } catch (e) {
         logger.error(`Could not apply age confirmation protection: ${e}`)
       }
@@ -797,15 +947,15 @@ export class VerificationHandler {
     if (!this.config.enableAgeConfirmation) {
       try {
         const finalAgeState = await this.page.evaluate(() => {
-          const ageCheckbox = document.getElementById('adultAge') as any
-          const allCheckboxes = Array.from(document.querySelectorAll('input[type="checkbox"]')).map(cb => ({
+          const ageCheckbox = document.getElementById("adultAge") as any
+          const allCheckboxes = Array.from(document.querySelectorAll('input[type="checkbox"]')).map((cb) => ({
             id: (cb as any).id,
-            checked: (cb as any).checked
+            checked: (cb as any).checked,
           }))
           return {
             ageChecked: ageCheckbox ? ageCheckbox.checked : null,
             ageDisabled: ageCheckbox ? ageCheckbox.disabled : null,
-            allCheckboxes
+            allCheckboxes,
           }
         })
 
@@ -814,7 +964,7 @@ export class VerificationHandler {
           logger.error(`All checkbox states: ${JSON.stringify(finalAgeState.allCheckboxes)}`)
 
           await this.page.evaluate(() => {
-            const ageCheckbox = document.getElementById('adultAge') as any
+            const ageCheckbox = document.getElementById("adultAge") as any
             if (ageCheckbox) {
               ageCheckbox.checked = false
               ageCheckbox.disabled = true

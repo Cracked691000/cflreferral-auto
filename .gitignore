@@ -1,76 +1,15 @@
-# Dependencies
 node_modules/
-npm-debug.log*
-yarn-debug.log*
-yarn-error.log*
-
-# Lock files
 package-lock.json
-yarn.lock
-
-# Text files (logs, temp data, etc.)
-*.txt
-checklate.txt  # Custom checklate file
-logs/
+dist/
+.env
 *.log
-
-# Debug files and screenshots
+logs/
 *.png
 *.jpg
-*.jpeg
-*.gif
-debug-*.*
-*-debug.*
-screenshot.*
-debug-screenshot.*
-
-# Environment variables
-.env
-.env.local
-.env.development.local
-.env.test.local
-.env.production.local
-
-# Build outputs
-dist/
-build/
-out/
-*.tsbuildinfo
-
-# IDE and editor files
+*.txt
+proxy.txt
+.DS_Store
+Thumbs.db
 .vscode/
 .idea/
-*.swp
-*.swo
-*~
-
-# OS generated files
-.DS_Store
-.DS_Store?
-._*
-.Spotlight-V100
-.Trashes
-ehthumbs.db
-Thumbs.db
-
-# Runtime data
-pids
-*.pid
-*.seed
-*.pid.lock
-
-# Coverage directory used by tools like istanbul
-coverage/
-*.lcov
-
-# Temporary folders
-tmp/
-temp/
-
-# Cache directories
-.cache/
-.parcel-cache/
-
-# Logs
-logs
-*.log
+*.tsbuildinfo

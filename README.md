@@ -26,6 +26,12 @@ Automated Crossfire Legends account registration with email verification.
 ```bash
 npm install
 npm run build
+npm start
+```
+
+#### Method 3: Dev Mode (No Build)
+```bash
+npm install
 npm run dev
 ```
 </details>
@@ -36,6 +42,12 @@ npm run dev
 ```bash
 npm install
 npm run build
+npm start
+```
+
+Or dev mode (no build):
+```bash
+npm install
 npm run dev
 ```
 </details>
@@ -59,14 +71,16 @@ termux-x11 :0 &
 
 # Run bot with X11 display (auto-detects browser)
 export DISPLAY=:0
-npm run dev
+npm start
+
+# Or dev mode (no build): npm run dev
 ```
 </details>
 
 ## Configuration
 
 ### Proxy Settings
-Edit `src/config/index.ts`:
+Edit `src/config/defaults.ts`:
 ```typescript
 useProxy: 1,        // 0=direct, 1=HTTP file, 2=HTTPS file, 3=SOCKS4, 4=SOCKS5, 5=stable
 proxyFile: "proxy.txt"  // Your proxy list
@@ -86,7 +100,7 @@ socks5://socks.example.com:1080:username:password
 proxy.provider.com:8080
 ```
 
-Set `useProxy: 1` in `src/config/index.ts` for HTTP proxies, `useProxy: 4` for SOCKS5, etc.
+Set `useProxy: 1` in `src/config/defaults.ts` for HTTP proxies, `useProxy: 4` for SOCKS5, etc.
 
 ### Optional Configuration
 
@@ -107,7 +121,7 @@ export REFERRAL_CODE="your-referral-code"
 ```
 
 #### Continuous Mode (Auto-Restart)
-Enable automatic continuous registration by editing `src/config/index.ts`:
+Enable automatic continuous registration by editing `src/config/defaults.ts`:
 ```typescript
 continuousMode: true,           // Enable auto-restart after each successful registration
 maxContinuousSessions: 50,      // Maximum sessions before stopping (0 = unlimited)

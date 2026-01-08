@@ -1,6 +1,6 @@
 /**
  * Crossfire Legends Referral Bot
- * 
+ *
  * Automated referral registration bot for Crossfire Legends game.
  * Features:
  * - Automatic temporary email generation via GuerrillaMail
@@ -8,7 +8,7 @@
  * - Proxy support (HTTP, HTTPS, SOCKS4, SOCKS5)
  * - Automatic account registration and verification
  * - Multi-platform support (Windows, Linux, macOS, Android Termux)
- * 
+ *
  * @author mra1k3r0
  * @license MIT
  */
@@ -34,7 +34,7 @@ async function main() {
     debugMode: botConfig.debugMode,
     enableFileLogging: botConfig.enableFileLogging,
     logFilePath: botConfig.logFilePath,
-    enableLogColors: botConfig.enableLogColors
+    enableLogColors: botConfig.enableLogColors,
   })
 
   // Show debug info when debugMode is enabled
@@ -80,7 +80,7 @@ async function runSingleSession(botConfig: any) {
  */
 async function runContinuousMode(botConfig: any) {
   logger.success("Starting Crossfire Referral Automation (Continuous Mode)")
-  logger.info(`Max sessions: ${botConfig.maxContinuousSessions === 0 ? 'unlimited' : botConfig.maxContinuousSessions}`)
+  logger.info(`Max sessions: ${botConfig.maxContinuousSessions === 0 ? "unlimited" : botConfig.maxContinuousSessions}`)
   logger.info(`Inactivity timeout: ${botConfig.inactivityTimeout / 1000}s`)
 
   let sessionCount = 0
@@ -127,8 +127,7 @@ async function runContinuousMode(botConfig: any) {
       // Brief pause between sessions
       const pauseBetweenSessions = 3000
       logger.info(`Waiting ${pauseBetweenSessions / 1000}s before next session...`)
-      await new Promise(resolve => setTimeout(resolve, pauseBetweenSessions))
-
+      await new Promise((resolve) => setTimeout(resolve, pauseBetweenSessions))
     } catch (error) {
       logger.error(`Session ${sessionCount} failed: ${error}`)
       lastActivityTime = Date.now()
@@ -136,7 +135,7 @@ async function runContinuousMode(botConfig: any) {
       // Continue to next session unless it's a critical error
       const pauseAfterError = 5000
       logger.info(`Waiting ${pauseAfterError / 1000}s before retry...`)
-      await new Promise(resolve => setTimeout(resolve, pauseAfterError))
+      await new Promise((resolve) => setTimeout(resolve, pauseAfterError))
     }
   }
 

@@ -162,7 +162,11 @@ function generateSmallBanner(): string {
       border,
     ),
     `${colors.cyan}├${"─".repeat(W - 2)}┤${colors.reset}`,
-    padLine(` ${colors.dim}Referral${colors.reset} ${colors.green}${getPackageVersion()}${colors.reset}          `, W, border),
+    padLine(
+      ` ${colors.dim}Referral${colors.reset} ${colors.green}${getPackageVersion()}${colors.reset}          `,
+      W,
+      border,
+    ),
     padLine(` ${colors.dim}by${colors.reset} ${colors.magenta}mra1k3r0${colors.reset}             `, W, border),
     `${colors.cyan}└${"─".repeat(W - 2)}┘${colors.reset}`,
   ]
@@ -236,4 +240,11 @@ async function animatedBanner(): Promise<void> {
 // Initialize banner on module load
 animatedBanner()
 
-export { displayBanner, animatedBanner, generateLargeBanner, generateMediumBanner, generateSmallBanner, generateMiniBanner }
+export {
+  displayBanner,
+  animatedBanner,
+  generateLargeBanner,
+  generateMediumBanner,
+  generateSmallBanner,
+  generateMiniBanner,
+}

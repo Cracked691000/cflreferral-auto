@@ -46,7 +46,9 @@ export class ProxyManager {
       ],
       ...options,
     }
-    logger.debug(`ProxyManager constructor called with proxyType: ${this.options.proxyType}, proxyFile: ${this.options.proxyFile}`)
+    logger.debug(
+      `ProxyManager constructor called with proxyType: ${this.options.proxyType}, proxyFile: ${this.options.proxyFile}`,
+    )
     this.loadProxies()
   }
 
@@ -115,7 +117,9 @@ export class ProxyManager {
         }
       }
 
-      logger.info(`Using Proxy: True, loaded ${proxies.length} proxy/proxies from proxy.txt (${protocol.toUpperCase()})`)
+      logger.info(
+        `Using Proxy: True, loaded ${proxies.length} proxy/proxies from proxy.txt (${protocol.toUpperCase()})`,
+      )
       logger.debug(`Loaded ${proxies.length} ${protocol.toUpperCase()} proxies from file: ${filePath}`)
     } catch (error) {
       logger.error(`Error loading proxies from file: ${error}`)
@@ -186,7 +190,7 @@ export class ProxyManager {
    */
   private async pingProxy(proxy: ProxyInfo): Promise<number> {
     // Skip testing for residential proxies as they may not respond to automated tests
-    if (proxy.host.includes('scrapeops') || proxy.host.includes('residential-proxy')) {
+    if (proxy.host.includes("scrapeops") || proxy.host.includes("residential-proxy")) {
       logger.debug(`Skipping proxy test for residential proxy: ${proxy.host}:${proxy.port}`)
       return 1000 // Return a fake good response time
     }
@@ -222,7 +226,7 @@ export class ProxyManager {
 
         if (proxy.username && proxy.password) {
           // Use https-proxy-agent for authenticated HTTP proxies
-          const HttpsProxyAgent = require('https-proxy-agent')
+          const HttpsProxyAgent = require("https-proxy-agent")
           const proxyUrl = `${proxy.protocol}://${proxy.username}:${proxy.password}@${proxy.host}:${proxy.port}`
           axiosConfig.httpsAgent = new HttpsProxyAgent.HttpsProxyAgent(proxyUrl)
           axiosConfig.httpAgent = new HttpsProxyAgent.HttpsProxyAgent(proxyUrl)
@@ -238,7 +242,8 @@ export class ProxyManager {
         axiosInstance = axios.create({
           ...axiosConfig,
           headers: {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "User-Agent":
+              "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
             Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
             "Accept-Language": "en-US,en;q=0.9",
             "Accept-Encoding": "gzip, deflate, br",
@@ -261,7 +266,7 @@ export class ProxyManager {
             timeout: this.options.testTimeout,
             validateStatus: () => true, // Accept any status code
           })
-      const responseTime = Date.now() - startTime
+          const responseTime = Date.now() - startTime
 
           // If we get any HTTP response (even 400/403), the proxy connected successfully
           // 400/403 means proxy works but test URL rejected - proxy might still work for target site
@@ -269,13 +274,20 @@ export class ProxyManager {
             if (response.status === 200) {
               logger.debug(`${proxy.host}:${proxy.port} test successful (200 OK)`)
             } else {
-              logger.debug(`${proxy.host}:${proxy.port} test returned ${response.status} (proxy connected, but test URL rejected)`)
+              logger.debug(
+                `${proxy.host}:${proxy.port} test returned ${response.status} (proxy connected, but test URL rejected)`,
+              )
             }
             return responseTime
           }
         } catch (testError: any) {
           // Check if it's a connection error (proxy doesn't work) vs HTTP error (proxy works but request failed)
-          if (testError.code && (testError.code.includes('ECONN') || testError.code.includes('ETIMEDOUT') || testError.code.includes('ENOTFOUND'))) {
+          if (
+            testError.code &&
+            (testError.code.includes("ECONN") ||
+              testError.code.includes("ETIMEDOUT") ||
+              testError.code.includes("ENOTFOUND"))
+          ) {
             // Connection error - proxy doesn't work
             lastError = testError
             continue
@@ -283,17 +295,17 @@ export class ProxyManager {
             // Got HTTP response (even 400/403) - proxy is working!
             const responseTime = Date.now() - startTime
             logger.debug(`${proxy.host}:${proxy.port} test returned ${testError.response.status} (proxy connected)`)
-        return responseTime
+            return responseTime
           }
           lastError = testError
         }
       }
-      
+
       // If all URLs failed with connection errors, log the last error
       if (lastError) {
         const errorMsg = lastError.code || lastError.message || "Unknown error"
         // Only log as warning if it's not a connection error (might still work)
-        if (errorMsg.includes('ERR_BAD_REQUEST') || errorMsg.includes('400')) {
+        if (errorMsg.includes("ERR_BAD_REQUEST") || errorMsg.includes("400")) {
           logger.debug(`${proxy.host}:${proxy.port} test returned 400 (proxy may still work)`)
         } else {
           logger.warn(`${proxy.host}:${proxy.port} failed with ${proxy.protocol}: ${errorMsg}`)
@@ -307,7 +319,7 @@ export class ProxyManager {
 
     // For ERR_BAD_REQUEST, proxy might still work (test URL rejected but proxy connected)
     // Return a slow response time so it's tried but not prioritized
-    if (lastError && (lastError.code === 'ERR_BAD_REQUEST' || lastError.message?.includes('400'))) {
+    if (lastError && (lastError.code === "ERR_BAD_REQUEST" || lastError.message?.includes("400"))) {
       logger.debug(`Proxy ${proxy.host}:${proxy.port} test returned 400, but proxy may still work`)
       return 5000 // Return slow time so it's tried but not prioritized
     }
@@ -331,8 +343,8 @@ export class ProxyManager {
     logger.debug("Testing proxies for speed...")
 
     // Prioritize file proxies - test them first before GitHub proxies
-    const fileProxyKeys = new Set(this.fileProxies.map(p => `${p.host}:${p.port}`))
-    const urlProxies = this.proxies.filter(p => !fileProxyKeys.has(`${p.host}:${p.port}`))
+    const fileProxyKeys = new Set(this.fileProxies.map((p) => `${p.host}:${p.port}`))
+    const urlProxies = this.proxies.filter((p) => !fileProxyKeys.has(`${p.host}:${p.port}`))
     const testProxies = []
 
     // Test file proxies first (all of them, or up to testCount)
@@ -343,13 +355,13 @@ export class ProxyManager {
       }
       logger.debug(`Prioritizing ${fileTestCount} file proxy/proxies`)
     }
-    
+
     // Only test URL proxies if we haven't reached testCount limit
     if (testProxies.length < this.options.testCount && urlProxies.length > 0) {
       const shuffled = [...urlProxies].sort(() => 0.5 - Math.random())
       const remainingCount = Math.min(this.options.testCount - testProxies.length, urlProxies.length)
       for (let i = 0; i < remainingCount; i++) {
-      testProxies.push(shuffled[i])
+        testProxies.push(shuffled[i])
       }
     }
 
@@ -363,16 +375,16 @@ export class ProxyManager {
 
     const results = []
     try {
-    for (const proxy of testProxies) {
-      const responseTime = await this.pingProxy(proxy)
-      if (responseTime > 0) {
-        results.push({ ...proxy, responseTime })
-      }
+      for (const proxy of testProxies) {
+        const responseTime = await this.pingProxy(proxy)
+        if (responseTime > 0) {
+          results.push({ ...proxy, responseTime })
+        }
       }
     } finally {
       // Clear loading animation
       clearInterval(loadingInterval)
-      process.stdout.write('\r\x1b[K') // Clear the line
+      process.stdout.write("\r\x1b[K") // Clear the line
     }
 
     if (results.length > 0) {
@@ -418,7 +430,7 @@ export class ProxyManager {
     }
 
     // For HTTP proxies with authentication, use puppeteer-page-proxy instead of --proxy-server
-    if (proxy.username && proxy.password && proxy.protocol === 'http') {
+    if (proxy.username && proxy.password && proxy.protocol === "http") {
       logger.debug(`Skipping --proxy-server for authenticated HTTP proxy (using puppeteer-page-proxy)`)
       return []
     }

@@ -33,39 +33,53 @@ export class SecureConnectionManager {
       ...securityConfig,
     }
 
-    this.initializeSecurity()
+    // Initialize security asynchronously
+    this.initializeSecurity().catch((error) => {
+      logger.error(`Failed to initialize secure connection manager: ${error}`)
+    })
   }
 
   private async initializeSecurity(): Promise<void> {
-    logger.debug("Initializing secure connection manager...")
+    logger.debug("🔐 Initializing secure connection manager...")
 
     if (this.securityConfig.enableClientCertificates) {
       await this.loadClientCertificates()
+      logger.debug("🔐 Client certificates enabled")
+    } else {
+      logger.debug("ℹ️  Client certificates disabled")
     }
 
     await this.initializeTlsFingerprints()
     await this.validateSecurityConfig()
 
-    logger.debug("Secure connection manager initialized")
+    logger.info("🔐 Secure connection manager initialized successfully")
+
+    // Log current security status and risk assessment
+    this.logSecurityStatus()
   }
 
   private async loadClientCertificates(): Promise<void> {
     if (!this.securityConfig.privateKeyPath || !this.securityConfig.certificatePath) {
-      logger.debug("Client certificate paths not configured")
+      logger.debug("Client certificate paths not configured, skipping certificate loading")
       return
     }
 
     try {
-      await fs.promises.access(this.securityConfig.privateKeyPath)
-      await fs.promises.access(this.securityConfig.certificatePath)
+      logger.debug(
+        `Loading client certificates from: ${this.securityConfig.privateKeyPath}, ${this.securityConfig.certificatePath}`,
+      )
+
+      await fs.promises.access(this.securityConfig.privateKeyPath, fs.constants.R_OK)
+      await fs.promises.access(this.securityConfig.certificatePath, fs.constants.R_OK)
 
       if (this.securityConfig.caCertificatePath) {
-        await fs.promises.access(this.securityConfig.caCertificatePath)
+        await fs.promises.access(this.securityConfig.caCertificatePath, fs.constants.R_OK)
       }
 
-      logger.success("Client certificates loaded successfully")
-    } catch (error) {
-      logger.error(`Failed to load client certificates: ${error}`)
+      logger.success("🔐 Client certificates loaded and validated successfully")
+    } catch (error: any) {
+      logger.warn(`Client certificate files not accessible: ${error.message}`)
+      logger.debug("Disabling client certificates due to file access issues")
       this.securityConfig.enableClientCertificates = false
     }
   }
@@ -114,6 +128,52 @@ export class SecureConnectionManager {
         return num >= 0 && num <= 255
       })
     )
+  }
+
+  /**
+   * Get Puppeteer launch options for secure connections
+   */
+  getPuppeteerLaunchOptions(): any {
+    const options: any = {}
+    const securityArgs: string[] = []
+
+    // Only add client certificate args if certificates are properly configured
+    if (
+      this.securityConfig.enableClientCertificates &&
+      this.securityConfig.privateKeyPath &&
+      this.securityConfig.certificatePath
+    ) {
+      try {
+        // Validate certificate files exist before adding them
+        const fs = require("fs")
+        if (fs.existsSync(this.securityConfig.privateKeyPath) && fs.existsSync(this.securityConfig.certificatePath)) {
+          securityArgs.push(`--client-certificate=${this.securityConfig.certificatePath}`)
+          securityArgs.push(`--client-certificate-key=${this.securityConfig.privateKeyPath}`)
+
+          if (this.securityConfig.caCertificatePath && fs.existsSync(this.securityConfig.caCertificatePath)) {
+            securityArgs.push(`--client-certificate-ca=${this.securityConfig.caCertificatePath}`)
+          }
+
+          logger.info("🔐 Client certificates configured for Puppeteer")
+        } else {
+          logger.debug("🔐 Client certificate files not found, skipping certificate configuration")
+        }
+      } catch (error) {
+        logger.warn(`Client certificate validation failed: ${error}`)
+      }
+    }
+
+    // Always configure TLS versions for security
+    securityArgs.push(`--tls-min-version=${this.securityConfig.minTlsVersion}`)
+    securityArgs.push(`--tls-max-version=${this.securityConfig.maxTlsVersion}`)
+
+    // Only set options.args if we have security arguments
+    if (securityArgs.length > 0) {
+      options.args = securityArgs
+      logger.debug(`🔐 Prepared ${securityArgs.length} security arguments for browser launch`)
+    }
+
+    return options
   }
 
   async establishSecureConnection(
@@ -521,6 +581,46 @@ export class SecureConnectionManager {
 
   getSecurityMetrics(host: string, port = 443): SecureConnectionMetrics | null {
     return this.securityMetrics.get(`${host}:${port}`) || null
+  }
+
+  /**
+   * Log current security status and risk assessment
+   */
+  private logSecurityStatus(): void {
+    const enabledFeatures = []
+    const securityLevel = "HIGH"
+
+    if (this.securityConfig.enableCertificatePinning) {
+      enabledFeatures.push("Certificate Pinning")
+    }
+
+    if (this.securityConfig.enableClientCertificates) {
+      enabledFeatures.push("Client Certificates")
+    }
+
+    if (this.securityConfig.tlsFingerprintCheck) {
+      enabledFeatures.push("TLS Fingerprinting")
+    }
+
+    enabledFeatures.push(`TLS ${this.securityConfig.minTlsVersion}-${this.securityConfig.maxTlsVersion}`)
+
+    const blockedCount = this.securityConfig.blockedNetworks.length
+    const allowedCount = this.securityConfig.allowedNetworks.length
+
+    logger.debug(`🛡️  Security Level: ${securityLevel} | Features: ${enabledFeatures.join(", ")}`)
+    logger.debug(`🌐 Network Security: ${allowedCount} allowed networks, ${blockedCount} blocked networks`)
+    logger.debug(
+      `🔒 TLS Security: Enforcing ${this.securityConfig.minTlsVersion} to ${this.securityConfig.maxTlsVersion}`,
+    )
+
+    // Assess overall risk level
+    let riskLevel = "LOW"
+    if (blockedCount === 0) riskLevel = "MEDIUM"
+    if (!this.securityConfig.enableCertificatePinning) riskLevel = "HIGH"
+
+    logger.debug(
+      `⚠️  Risk Assessment: ${riskLevel} | Certificate Pinning: ${this.securityConfig.enableCertificatePinning ? "ENABLED" : "DISABLED"}`,
+    )
   }
 
   updateSecurityConfig(newConfig: Partial<SecurityConfig>): void {

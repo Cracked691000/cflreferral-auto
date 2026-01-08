@@ -3,7 +3,6 @@ import { SocksProxyAgent } from "socks-proxy-agent"
 import * as net from "net"
 import * as dns from "dns"
 import { promisify } from "util"
-import { SecureConnectionManager } from "./secure-connection-manager"
 import { logger } from "../utils/logger"
 import type { QuantumProxyConfig, ConnectionMetrics } from "../types"
 
@@ -16,7 +15,29 @@ interface SmartConnection {
   lastUsed: number
   connectionPool: AxiosInstance[]
   dnsCache: Map<string, { ip: string; ttl: number }>
-  securityMetrics?: any
+}
+
+// AI-like proxy intelligence data structures
+interface ProxyIntelligence {
+  proxyKey: string
+  successRate: number
+  averageResponseTime: number
+  lastUsed: number
+  consecutiveFailures: number
+  totalRequests: number
+  totalSuccesses: number
+  backoffUntil: number
+  optimalUsageWindow: { start: number; end: number } | null
+  riskScore: number // 0-100, higher = more risky
+  adaptiveCooldown: number // ms between requests
+}
+
+interface RequestPattern {
+  timestamp: number
+  success: boolean
+  responseTime: number
+  statusCode: number
+  proxyKey: string
 }
 
 export class QuantumProxyManager {
@@ -25,21 +46,287 @@ export class QuantumProxyManager {
   private connectionPoolSize = 3
   private dnsCache = new Map<string, { ip: string; expires: number }>()
   private dnsCacheTTL = 300000
-  private secureManager: SecureConnectionManager
   private keepAliveInterval: NodeJS.Timeout | null = null
 
+  // AI Intelligence Layer
+  private proxyIntelligence = new Map<string, ProxyIntelligence>()
+  private requestHistory: RequestPattern[] = []
+  private maxHistorySize = 1000
+  private adaptiveRotationInterval: NodeJS.Timeout | null = null
+  private last429Error = 0
+  private globalRateLimit = { requests: 0, window: 60000, maxRequests: 30 } // 30 requests per minute
+
   constructor(private targetDomain = "act.playcfl.com") {
-    this.secureManager = new SecureConnectionManager({
-      enableCertificatePinning: true,
-      enableClientCertificates: false,
-      allowedNetworks: ["0.0.0.0/0"],
-      blockedNetworks: [],
-      tlsFingerprintCheck: true,
-      maxTlsVersion: "TLSv1.3",
-      minTlsVersion: "TLSv1.2",
-      enableHstsPreload: true,
-      securityHeadersCheck: true,
+    // Pure proxy management - no security features
+    this.startAdaptiveRotation()
+  }
+
+  /**
+   * AI-powered proxy selection using predictive analytics
+   */
+  private selectOptimalProxy(): SmartConnection | null {
+    if (this.connections.size === 0) return null
+
+    const now = Date.now()
+    const candidates = Array.from(this.connections.values()).filter((conn) => {
+      const intel = this.proxyIntelligence.get(conn.proxy.host + ":" + conn.proxy.port)
+      // Skip proxies in backoff
+      if (intel && intel.backoffUntil > now) return false
+      // Skip high-risk proxies
+      if (intel && intel.riskScore > 80) return false
+      return true
     })
+
+    if (candidates.length === 0) return this.currentConnection
+
+    // Score each proxy using AI-like intelligence
+    const scored = candidates.map((conn) => {
+      const key = conn.proxy.host + ":" + conn.proxy.port
+      const intel = this.proxyIntelligence.get(key) || this.initializeProxyIntelligence(key)
+
+      let score = 0
+
+      // Success rate (40% weight)
+      score += intel.successRate * 0.4
+
+      // Response time (inverse - faster is better) (25% weight)
+      const speedScore = Math.max(0, 100 - intel.averageResponseTime / 10)
+      score += speedScore * 0.25
+
+      // Risk assessment (inverse - lower risk is better) (20% weight)
+      score += (100 - intel.riskScore) * 0.2
+
+      // Recency bonus (15% weight) - prefer recently successful proxies
+      const hoursSinceLastUse = (now - intel.lastUsed) / (1000 * 60 * 60)
+      const recencyScore = Math.max(0, 100 - hoursSinceLastUse * 10)
+      score += recencyScore * 0.15
+
+      return { connection: conn, score, intelligence: intel }
+    })
+
+    // Select the highest scoring proxy
+    scored.sort((a, b) => b.score - a.score)
+    const winner = scored[0]
+
+    logger.debug(
+      `🤖 AI Proxy Selection: ${winner.connection.proxy.host}:${winner.connection.proxy.port} (score: ${winner.score.toFixed(1)}, risk: ${winner.intelligence.riskScore})`,
+    )
+
+    return winner.connection
+  }
+
+  /**
+   * Learn from request outcomes and update proxy intelligence
+   */
+  private learnFromRequest(proxyKey: string, success: boolean, responseTime: number, statusCode: number): void {
+    const pattern: RequestPattern = {
+      timestamp: Date.now(),
+      success,
+      responseTime,
+      statusCode,
+      proxyKey,
+    }
+
+    // Add to history
+    this.requestHistory.push(pattern)
+    if (this.requestHistory.length > this.maxHistorySize) {
+      this.requestHistory.shift()
+    }
+
+    // Update proxy intelligence
+    const intel = this.proxyIntelligence.get(proxyKey) || this.initializeProxyIntelligence(proxyKey)
+    intel.lastUsed = Date.now()
+    intel.totalRequests++
+
+    if (success) {
+      intel.totalSuccesses++
+      intel.consecutiveFailures = 0
+      // Update response time (exponential moving average)
+      intel.averageResponseTime = intel.averageResponseTime * 0.7 + responseTime * 0.3
+    } else {
+      intel.consecutiveFailures++
+      // Handle rate limiting
+      if (statusCode === 429) {
+        this.last429Error = Date.now()
+        intel.backoffUntil = Date.now() + intel.adaptiveCooldown * 2
+        intel.adaptiveCooldown = Math.min(intel.adaptiveCooldown * 2, 300000) // Max 5 minutes
+        logger.warn(`🤖 AI: 429 detected on ${proxyKey}, backoff ${intel.adaptiveCooldown}ms`)
+      }
+    }
+
+    // Recalculate success rate
+    intel.successRate = (intel.totalSuccesses / intel.totalRequests) * 100
+
+    // Update risk score based on failure patterns
+    this.updateRiskAssessment(intel, statusCode)
+
+    // Learn optimal usage patterns
+    this.learnUsagePatterns(intel)
+
+    this.proxyIntelligence.set(proxyKey, intel)
+  }
+
+  /**
+   * Initialize intelligence data for a new proxy
+   */
+  private initializeProxyIntelligence(proxyKey: string): ProxyIntelligence {
+    return {
+      proxyKey,
+      successRate: 100, // Start optimistic
+      averageResponseTime: 1000, // 1 second baseline
+      lastUsed: Date.now(),
+      consecutiveFailures: 0,
+      totalRequests: 0,
+      totalSuccesses: 0,
+      backoffUntil: 0,
+      optimalUsageWindow: null,
+      riskScore: 20, // Start with low risk
+      adaptiveCooldown: 5000, // 5 seconds baseline
+    }
+  }
+
+  /**
+   * Update risk assessment based on failure patterns
+   */
+  private updateRiskAssessment(intel: ProxyIntelligence, statusCode: number): void {
+    let riskIncrease = 0
+
+    if (statusCode === 429) riskIncrease += 30
+    else if (statusCode >= 500) riskIncrease += 20
+    else if (statusCode >= 400) riskIncrease += 10
+
+    if (intel.consecutiveFailures > 3) riskIncrease += intel.consecutiveFailures * 5
+
+    intel.riskScore = Math.min(100, intel.riskScore + riskIncrease)
+
+    // Recovery: decrease risk for successful requests
+    if (intel.consecutiveFailures === 0 && intel.successRate > 80) {
+      intel.riskScore = Math.max(0, intel.riskScore - 5)
+    }
+  }
+
+  /**
+   * Learn optimal usage time windows for proxies
+   */
+  private learnUsagePatterns(intel: ProxyIntelligence): void {
+    const recentPatterns = this.requestHistory.filter((p) => p.proxyKey === intel.proxyKey).slice(-50) // Last 50 requests
+
+    if (recentPatterns.length < 20) return // Need enough data
+
+    // Analyze success rates by hour of day
+    const hourlyStats = new Map<number, { total: number; success: number }>()
+
+    recentPatterns.forEach((pattern) => {
+      const hour = new Date(pattern.timestamp).getHours()
+      const stats = hourlyStats.get(hour) || { total: 0, success: 0 }
+      stats.total++
+      if (pattern.success) stats.success++
+      hourlyStats.set(hour, stats)
+    })
+
+    // Find best performing hour
+    let bestHour = -1
+    let bestSuccessRate = 0
+
+    hourlyStats.forEach((stats, hour) => {
+      const rate = (stats.success / stats.total) * 100
+      if (rate > bestSuccessRate && stats.total >= 5) {
+        // At least 5 requests
+        bestSuccessRate = rate
+        bestHour = hour
+      }
+    })
+
+    if (bestHour !== -1) {
+      intel.optimalUsageWindow = {
+        start: bestHour,
+        end: (bestHour + 1) % 24,
+      }
+    }
+  }
+
+  /**
+   * Global rate limiting to prevent 429 errors
+   */
+  private checkGlobalRateLimit(): boolean {
+    const now = Date.now()
+
+    // Reset window if needed
+    if (
+      now - this.globalRateLimit.requests * (this.globalRateLimit.window / this.globalRateLimit.maxRequests) >
+      this.globalRateLimit.window
+    ) {
+      this.globalRateLimit.requests = 0
+    }
+
+    if (this.globalRateLimit.requests >= this.globalRateLimit.maxRequests) {
+      logger.warn(
+        `🤖 AI: Global rate limit reached (${this.globalRateLimit.requests}/${this.globalRateLimit.maxRequests})`,
+      )
+      return false
+    }
+
+    this.globalRateLimit.requests++
+    return true
+  }
+
+  /**
+   * Start adaptive rotation with AI intelligence
+   */
+  private startAdaptiveRotation(): void {
+    if (this.adaptiveRotationInterval) {
+      clearInterval(this.adaptiveRotationInterval)
+    }
+
+    // Adaptive rotation every 30-120 seconds based on performance
+    this.adaptiveRotationInterval = setInterval(() => {
+      this.performAdaptiveRotation()
+    }, 30000)
+  }
+
+  /**
+   * AI-driven adaptive rotation
+   */
+  private async performAdaptiveRotation(): Promise<void> {
+    if (this.connections.size < 2) return
+
+    const currentIntel = this.currentConnection
+      ? this.proxyIntelligence.get(this.currentConnection.proxy.host + ":" + this.currentConnection.proxy.port)
+      : null
+
+    // Force rotation if current proxy has high risk or poor performance
+    if (currentIntel && (currentIntel.riskScore > 70 || currentIntel.consecutiveFailures > 2)) {
+      logger.info(
+        `🤖 AI: Rotating due to high risk (${currentIntel.riskScore}) or failures (${currentIntel.consecutiveFailures})`,
+      )
+      await this.forceSmartRotation()
+      return
+    }
+
+    // Proactive rotation to maintain optimal performance
+    const optimalProxy = this.selectOptimalProxy()
+    if (optimalProxy && optimalProxy !== this.currentConnection) {
+      const optimalIntel = this.proxyIntelligence.get(optimalProxy.proxy.host + ":" + optimalProxy.proxy.port)
+      if (optimalIntel && optimalIntel.successRate > (currentIntel?.successRate || 0) + 10) {
+        logger.info(
+          `🤖 AI: Proactive rotation to better proxy (${optimalIntel.successRate.toFixed(1)}% vs ${(currentIntel?.successRate || 0).toFixed(1)}%)`,
+        )
+        this.currentConnection = optimalProxy
+      }
+    }
+  }
+
+  /**
+   * Force rotation to best available proxy
+   */
+  private async forceSmartRotation(): Promise<boolean> {
+    const bestProxy = this.selectOptimalProxy()
+    if (bestProxy && bestProxy !== this.currentConnection) {
+      logger.info(`🤖 AI: Force rotating to ${bestProxy.proxy.host}:${bestProxy.proxy.port}`)
+      this.currentConnection = bestProxy
+      return true
+    }
+    return false
   }
 
   async initializeQuantumConnection(proxyConfig: QuantumProxyConfig): Promise<boolean> {
@@ -50,25 +337,13 @@ export class QuantumProxyManager {
 
       await this.quantumDNSResolve(this.targetDomain)
 
-      logger.debug("Performing security assessment...")
-      const securityMetrics = await this.secureManager.establishSecureConnection(proxyConfig.host, proxyConfig.port, {
-        useTls: false,
-        timeout: 10000,
-      })
-
-      if (securityMetrics.securityScore < 60) {
-        logger.warn(`Proxy security score too low (${securityMetrics.securityScore}/100)`)
-        logger.debug(`Security issues: ${securityMetrics.vulnerabilities.join(", ")}`)
-      }
-
       const connection: SmartConnection = {
         proxy: proxyConfig,
         metrics: await this.measureConnectionQuality(proxyConfig),
-        axiosInstance: this.createSecureOptimizedAxiosInstance(proxyConfig),
+        axiosInstance: this.createOptimizedAxiosInstance(proxyConfig),
         lastUsed: Date.now(),
         connectionPool: [],
         dnsCache: new Map(),
-        securityMetrics,
       }
 
       connection.connectionPool = await this.createConnectionPool(proxyConfig, this.connectionPoolSize)
@@ -158,40 +433,6 @@ export class QuantumProxyManager {
     }
 
     return metrics
-  }
-
-  private createSecureOptimizedAxiosInstance(proxy: QuantumProxyConfig): AxiosInstance {
-    const secureInstance = this.secureManager.createSecureAxiosInstance()
-
-    let agent: any
-
-    if (proxy.protocol === "socks4" || proxy.protocol === "socks5") {
-      const socksUrl = `${proxy.protocol}://${proxy.host}:${proxy.port}`
-      agent = new SocksProxyAgent(socksUrl)
-    }
-
-    return axios.create({
-      ...secureInstance.defaults,
-      proxy: proxy.protocol.startsWith("http")
-        ? {
-            host: proxy.host,
-            port: proxy.port,
-            protocol: proxy.protocol,
-            auth:
-              proxy.username && proxy.password
-                ? {
-                    username: proxy.username,
-                    password: proxy.password,
-                  }
-                : undefined,
-          }
-        : undefined,
-      httpAgent: agent,
-      httpsAgent: agent,
-      timeout: 30000,
-      maxRedirects: 5,
-      validateStatus: (status) => status < 400,
-    })
   }
 
   private createOptimizedAxiosInstance(proxy: QuantumProxyConfig): AxiosInstance {
@@ -324,33 +565,105 @@ export class QuantumProxyManager {
   async getOptimizedConnection(): Promise<AxiosInstance | null> {
     if (!this.currentConnection) return null
 
-    this.currentConnection.lastUsed = Date.now()
-
-    if (this.currentConnection.connectionPool.length > 0) {
-      const connection = this.currentConnection.connectionPool.shift()!
-      this.currentConnection.connectionPool.push(connection)
-      return connection
+    // AI Rate limiting check
+    if (!this.checkGlobalRateLimit()) {
+      logger.warn(`🤖 AI: Request blocked by global rate limiting`)
+      return null
     }
 
-    return this.currentConnection.axiosInstance
-  }
+    // Check if current proxy is in backoff
+    const proxyKey = this.currentConnection.proxy.host + ":" + this.currentConnection.proxy.port
+    const intel = this.proxyIntelligence.get(proxyKey)
+    if (intel && intel.backoffUntil > Date.now()) {
+      logger.debug(`🤖 AI: Proxy ${proxyKey} in backoff, switching...`)
+      await this.forceSmartRotation()
+      // Retry with new proxy
+      return this.getOptimizedConnection()
+    }
 
-  async switchToBestProxy(): Promise<boolean> {
-    if (this.connections.size === 0) return false
-
-    let bestConnection: SmartConnection | null = null
-    let bestScore = -1
-
-    for (const connection of this.connections.values()) {
-      if (connection.metrics.stability > bestScore) {
-        bestScore = connection.metrics.stability
-        bestConnection = connection
+    // Check optimal usage window
+    if (intel?.optimalUsageWindow) {
+      const currentHour = new Date().getHours()
+      const inWindow = currentHour >= intel.optimalUsageWindow.start && currentHour < intel.optimalUsageWindow.end
+      if (!inWindow && Math.random() < 0.3) {
+        // 30% chance to rotate out of optimal window
+        logger.debug(`🤖 AI: Outside optimal usage window, considering rotation`)
+        const betterProxy = this.selectOptimalProxy()
+        if (betterProxy !== this.currentConnection) {
+          this.currentConnection = betterProxy
+        }
       }
     }
 
-    if (bestConnection && bestConnection !== this.currentConnection) {
-      this.currentConnection = bestConnection
-      logger.info(`Switched to best proxy: stability ${bestScore}/100`)
+    this.currentConnection!.lastUsed = Date.now()
+
+    if (this.currentConnection!.connectionPool.length > 0) {
+      const connection = this.currentConnection!.connectionPool.shift()!
+      this.currentConnection!.connectionPool.push(connection)
+      return connection
+    }
+
+    return this.currentConnection!.axiosInstance
+  }
+
+  /**
+   * AI-powered request execution with learning
+   */
+  async executeSmartRequest(config: any): Promise<any> {
+    const startTime = Date.now()
+    const proxyKey = this.currentConnection
+      ? this.currentConnection.proxy.host + ":" + this.currentConnection.proxy.port
+      : "direct"
+
+    try {
+      const instance = await this.getOptimizedConnection()
+      if (!instance) {
+        throw new Error("No proxy connection available")
+      }
+
+      const response = await instance(config)
+      const responseTime = Date.now() - startTime
+
+      // Learn from success
+      this.learnFromRequest(proxyKey, true, responseTime, response.status)
+
+      return response
+    } catch (error: any) {
+      const responseTime = Date.now() - startTime
+      const statusCode = error.response?.status || 0
+
+      // Learn from failure
+      this.learnFromRequest(proxyKey, false, responseTime, statusCode)
+
+      // If 429 error, implement intelligent backoff
+      if (statusCode === 429) {
+        const intel = this.proxyIntelligence.get(proxyKey)
+        if (intel) {
+          const backoffTime = Math.min(intel.adaptiveCooldown * 2, 300000) // Max 5 minutes
+          intel.backoffUntil = Date.now() + backoffTime
+          logger.warn(`🤖 AI: 429 detected, backing off ${proxyKey} for ${backoffTime}ms`)
+        }
+      }
+
+      throw error
+    }
+  }
+
+  async switchToBestProxy(): Promise<boolean> {
+    const optimalConnection = this.selectOptimalProxy()
+
+    if (optimalConnection && optimalConnection !== this.currentConnection) {
+      const oldKey = this.currentConnection
+        ? `${this.currentConnection.proxy.host}:${this.currentConnection.proxy.port}`
+        : "none"
+      const newKey = `${optimalConnection.proxy.host}:${optimalConnection.proxy.port}`
+
+      this.currentConnection = optimalConnection
+
+      const intel = this.proxyIntelligence.get(newKey)
+      logger.info(
+        `🤖 AI: Switched to optimal proxy ${newKey} (success: ${intel?.successRate.toFixed(1)}%, risk: ${intel?.riskScore})`,
+      )
       return true
     }
 
@@ -386,44 +699,31 @@ export class QuantumProxyManager {
     return this.currentConnection?.metrics || null
   }
 
-  configureClientCertificates(privateKeyPath: string, certificatePath: string, caCertificatePath?: string): void {
-    this.secureManager.updateSecurityConfig({
-      enableClientCertificates: true,
-      privateKeyPath,
-      certificatePath,
-      caCertificatePath,
-    })
-    logger.info("Client certificate authentication configured")
-  }
-
-  configureNetworkAccess(allowedNetworks: string[], blockedNetworks: string[] = []): void {
-    this.secureManager.updateSecurityConfig({
-      allowedNetworks,
-      blockedNetworks,
-    })
-    logger.info(`Network access configured: ${allowedNetworks.length} allowed, ${blockedNetworks.length} blocked`)
-  }
-
-  getSecurityMetrics(): any {
-    return this.currentConnection?.securityMetrics || null
-  }
-
   startKeepAlive(): void {
     if (this.keepAliveInterval) {
       clearInterval(this.keepAliveInterval)
     }
 
-    logger.debug("Starting quantum keep-alive pings every 10 seconds")
+    logger.debug("Starting quantum keep-alive pings every 60 seconds")
 
     this.keepAliveInterval = setInterval(async () => {
       if (this.currentConnection) {
+        // Skip ping if we got 429 error recently (wait at least 60 seconds)
+        const timeSince429 = Date.now() - this.last429Error
+        if (timeSince429 < 60000) {
+          logger.debug(
+            `Skipping keep-alive ping - 429 cooldown (${Math.round((60000 - timeSince429) / 1000)}s remaining)`,
+          )
+          return
+        }
+
         try {
           await this.performAggressiveKeepAlivePing()
         } catch (error) {
           // Silent keep-alive failure
         }
       }
-    }, 10000)
+    }, 60000) // Reduced frequency to 60 seconds
   }
 
   stopKeepAlive(): void {
@@ -438,14 +738,10 @@ export class QuantumProxyManager {
     if (!this.currentConnection) return "healthy"
 
     try {
+      // Only test TCP connectivity to reduce HTTP requests (avoid 429)
       const tcpConnected = await this.testTcpConnectivity()
       if (!tcpConnected) {
         return "tcp_lost"
-      }
-
-      const httpWorking = await this.testHttpConnectivity()
-      if (!httpWorking) {
-        return "http_failed"
       }
 
       return "healthy"
@@ -495,45 +791,22 @@ export class QuantumProxyManager {
     }
   }
 
-  async performSecurityAudit(): Promise<{
-    score: number
-    vulnerabilities: string[]
-    recommendations: string[]
-    riskLevel: string
-  }> {
-    if (!this.currentConnection) {
-      throw new Error("No active connection to audit")
-    }
-
-    const metrics = this.currentConnection.securityMetrics
-    if (!metrics) {
-      throw new Error("No security metrics available")
-    }
-
-    const riskLevel =
-      metrics.securityScore >= 80
-        ? "LOW"
-        : metrics.securityScore >= 60
-          ? "MEDIUM"
-          : metrics.securityScore >= 40
-            ? "HIGH"
-            : "CRITICAL"
-
-    return {
-      score: metrics.securityScore,
-      vulnerabilities: metrics.vulnerabilities,
-      recommendations: metrics.recommendations,
-      riskLevel,
-    }
-  }
-
   async cleanup(): Promise<void> {
+    // Stop AI adaptive rotation
+    if (this.adaptiveRotationInterval) {
+      clearInterval(this.adaptiveRotationInterval)
+      this.adaptiveRotationInterval = null
+    }
+
+    // Clear AI intelligence data
+    this.proxyIntelligence.clear()
+    this.requestHistory = []
+
     this.dnsCache.clear()
-    this.secureManager.clearSecurityCaches()
     this.connections.clear()
     this.currentConnection = null
 
-    logger.debug("Quantum proxy manager cleaned up")
+    logger.debug("Quantum proxy manager cleaned up (AI intelligence cleared)")
   }
 }
 

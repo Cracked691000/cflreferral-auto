@@ -29,166 +29,68 @@ export class PasswordHandler {
     return baseTimeout
   }
 
-  private async proxyAwareDelay(baseDelay: number): Promise<void> {
-    const adjustedDelay = this.proxyManager?.getCurrentProxy() ? baseDelay * 1.5 : baseDelay
-    await delay(adjustedDelay)
+  /**
+   * Find and click a button by its text content
+   */
+  private async clickButtonByText(targetText: string, skipTexts: string[] = []): Promise<boolean> {
+    try {
+      const buttonData = await this.page.evaluate(
+        (target: string, skip: string[]) => {
+          const buttons = Array.from(document.querySelectorAll("button"))
+          for (const button of buttons) {
+            const btn = button as any
+            if (btn.disabled || btn.hasAttribute("disabled")) continue
+
+            const text = btn.textContent?.trim() || ""
+            const lowerText = text.toLowerCase()
+
+            if (skip.some((s) => lowerText.includes(s.toLowerCase()))) continue
+
+            if (lowerText.includes(target.toLowerCase())) {
+              const rect = btn.getBoundingClientRect()
+              if (rect.width > 0 && rect.height > 0) {
+                return { text, x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 }
+              }
+            }
+          }
+          return null
+        },
+        targetText,
+        skipTexts,
+      )
+
+      if (buttonData) {
+        await this.page.mouse.click(buttonData.x, buttonData.y)
+        logger.success(`${targetText} button clicked: "${buttonData.text}"`)
+        return true
+      }
+    } catch (e) {
+      logger.debug(`Could not find ${targetText} button: ${e}`)
+    }
+    return false
   }
 
   async clickContinueButton(): Promise<boolean> {
-    logger.info("STEP 5: Proceeding to password creation page...")
+    logger.info("STEP 6: Proceeding to password creation page...")
 
-    const wasUsingStableMode = this.config.useProxy === 5
-    if (wasUsingStableMode) {
-      logger.info("STABLE MODE: Temporarily disabling proxy for form transition")
-      this.proxyManager?.stopKeepAlive?.()
-      this.config.useProxy = 0
-    }
+    const clicked = await this.clickButtonByText("Continue", ["get code", "send code", "resend"])
 
-    const continueSelectors = [
-      'button:contains("Continue")',
-      'button[type="submit"]',
-      ".infinite-btn-primary:not([disabled])",
-      'button:not([disabled]):contains("Continue")',
-    ]
+    if (!clicked) {
+      logger.info("Continue button not found, waiting for page transition...")
+      await delay(1500)
 
-    let continueClicked = false
-    for (const selector of continueSelectors) {
-      try {
-        const button = await this.page.$(selector)
-        if (button) {
-          const isDisabled = await this.page.evaluate(
-            (el) => (el as any).disabled || (el as any).hasAttribute("disabled"),
-            button,
-          )
-          if (!isDisabled) {
-            await button.click()
-            logger.success(`Continue button clicked: ${selector}`)
-            continueClicked = true
-            break
-          }
-        }
-      } catch (e) {
-        logger.warn(`Could not check continue button: ${selector}`)
-        continue
+      const passwordField = await this.page.$('input[type="password"]')
+      if (passwordField) {
+        logger.info("Page auto-transitioned to password page")
+        return true
       }
-    }
 
-    if (!continueClicked) {
-      logger.info("Continue button not found or disabled, waiting for manual verification code input...")
-      logger.info("Please manually enter the verification code sent to your email")
-      await delay(10000)
-    }
-
-    await delay(2000)
-
-    // Try verification continue button
-    const verificationContinueSelectors = [
-      "button.infinite-btn-primary.infinite-btn-block",
-      'button[type="button"].infinite-btn-primary',
-      "button.infinite-btn-primary:not([disabled])",
-      'button[type="submit"]:not([disabled])',
-    ]
-
-    let verificationContinueClicked = false
-
-    for (const selector of verificationContinueSelectors) {
-      try {
-        const button = await this.page.$(selector)
-        if (button) {
-          const isDisabled = await this.page.evaluate(
-            (el) => (el as any).disabled || (el as any).hasAttribute("disabled"),
-            button,
-          )
-          const buttonText = await this.page.evaluate((el) => (el as any).textContent?.trim(), button)
-
-          logger.debug(`Checking Continue button: ${selector} - Text: "${buttonText}" - Disabled: ${isDisabled}`)
-
-          if (!isDisabled && buttonText?.includes("Continue")) {
-            const randomClickDelay = Math.floor(Math.random() * 1000) + 500
-            await delay(randomClickDelay)
-
-            try {
-              await button.click()
-              logger.success(`Continue button clicked (method 1): ${selector}`)
-              verificationContinueClicked = true
-              break
-            } catch (e1) {
-              logger.warn("Method 1 failed, trying method 2...")
-              try {
-                await delay(500)
-                await this.page.evaluate((btn) => (btn as any).click(), button)
-                logger.success(`Continue button clicked (method 2 - JS): ${selector}`)
-                verificationContinueClicked = true
-                break
-              } catch (e2) {
-                logger.warn("Method 2 failed, trying method 3...")
-                try {
-                  const box = await button.boundingBox()
-                  if (box) {
-                    for (let attempt = 0; attempt < 3; attempt++) {
-                      const offsetX = (Math.random() - 0.5) * 20
-                      const offsetY = (Math.random() - 0.5) * 10
-                      await this.page.mouse.click(box.x + box.width / 2 + offsetX, box.y + box.height / 2 + offsetY)
-                      await delay(300)
-                    }
-                    logger.success(`Continue button clicked (method 3 - mouse with retries): ${selector}`)
-                    verificationContinueClicked = true
-                    break
-                  }
-                } catch (e3) {
-                  logger.error(`All Continue button click methods failed for: ${selector}`)
-                }
-              }
-            }
-
-            if (verificationContinueClicked) break
-          }
-        }
-      } catch (e) {
-        logger.warn(`Could not process Continue button: ${selector} - Error: ${e}`)
-        continue
+      await delay(2000)
+      const retryClicked = await this.clickButtonByText("Continue", ["get code", "send code", "resend"])
+      if (!retryClicked) {
+        logger.error("Could not click Continue button")
+        return false
       }
-    }
-
-    // Fallback: find by text content
-    if (!verificationContinueClicked) {
-      try {
-        logger.info("Searching for Continue button by text content...")
-        const continueButton = await this.page.evaluateHandle(() => {
-          const buttons = Array.from(document.querySelectorAll("button"))
-          return buttons.find((btn) => {
-            const text = (btn as any).textContent?.trim()
-            return text && text.includes("Continue") && !(btn as any).disabled && !(btn as any).hasAttribute("disabled")
-          })
-        })
-
-        if (continueButton) {
-          const buttonText = await this.page.evaluate((el) => (el as any).textContent?.trim(), continueButton as any)
-          logger.success(`Found Continue button by text: "${buttonText}"`)
-
-          const randomClickDelay = Math.floor(Math.random() * 1000) + 500
-          await delay(randomClickDelay)
-
-          await (continueButton as any).click()
-          logger.success(`Continue button clicked (by text search): "${buttonText}"`)
-          verificationContinueClicked = true
-        }
-      } catch (e) {
-        logger.warn(`Could not find Continue button by text search: ${e}`)
-      }
-    }
-
-    if (!verificationContinueClicked) {
-      logger.error("CRITICAL: Could not click Continue button - cannot proceed to password creation")
-      logger.warn("This might be due to anti-bot protection. Please check if captcha appeared.")
-      await this.page.screenshot({ path: "continue-button-failed.png", fullPage: true })
-      return false
-    }
-
-    // Restore proxy setting
-    if (wasUsingStableMode) {
-      logger.info("STABLE MODE: Restoring proxy for password creation")
-      this.config.useProxy = 5
     }
 
     return true
@@ -196,160 +98,70 @@ export class PasswordHandler {
 
   async waitForPasswordPage(): Promise<boolean> {
     logger.info("Waiting for password creation page to load...")
-    await this.proxyAwareDelay(3000)
 
-    const passwordFieldExists = await this.page.$('#registerForm_newPassword, input[placeholder*="New password"]')
-    if (!passwordFieldExists) {
-      logger.error("Password creation page did not load properly")
-      await this.page.screenshot({ path: "password-page-failed.png", fullPage: true })
-      return false
+    const maxWaitTime = this.proxyManager?.getCurrentProxy() ? 5000 : 3000
+
+    for (let waited = 0; waited < maxWaitTime; waited += 500) {
+      const field = await this.page.$('input[type="password"]')
+      if (field) {
+        logger.success("Password creation page loaded")
+        return true
+      }
+      await delay(500)
     }
 
-    logger.success("Successfully transitioned to password creation page")
-    await this.proxyAwareDelay(1500)
-
-    return true
+    logger.error("Password creation page did not load")
+    return false
   }
 
   async fillPasswordFields(): Promise<boolean> {
-    logger.info("Handling password creation page...")
+    logger.info("Filling password fields...")
 
     try {
-      await this.page.waitForSelector('#registerForm_newPassword, input[placeholder*="New password"]', {
+      await this.page.waitForSelector('input[type="password"]', {
         timeout: this.getProxyAwareTimeout(5000),
       })
-      logger.success("Password creation form loaded")
     } catch (e) {
-      logger.error("Password creation form did not load - Continue button failed")
+      logger.error("Password form did not load")
       return false
     }
 
     // Fill new password
-    const newPasswordSelectors = [
-      "#registerForm_newPassword",
-      'input[placeholder*="New password"]',
-      'input[autocomplete="new-password"]:first-of-type',
-    ]
-
-    let newPasswordFilled = false
-    for (const selector of newPasswordSelectors) {
-      try {
-        const input = await this.page.$(selector)
-        if (input) {
-          await input.click({ clickCount: 3 })
-          await input.type("", { delay: 50 })
-          await input.type(this.config.levelinfPassword, { delay: 150 })
-          logger.success(`Filled new password field: ${selector}`)
-          newPasswordFilled = true
-          break
-        }
-      } catch (e) {
-        continue
-      }
+    const newPasswordInput =
+      (await this.page.$("#registerForm_newPassword")) || (await this.page.$('input[placeholder*="New password"]'))
+    if (newPasswordInput) {
+      await newPasswordInput.click({ clickCount: 3 })
+      await newPasswordInput.type(this.config.levelinfPassword, { delay: 150 })
+      logger.success("Filled new password field")
     }
 
     // Fill confirm password
-    const confirmNewPasswordSelectors = [
-      "#registerForm_confirmPassword",
-      'input[placeholder*="Confirm new password"]',
-      'input[autocomplete="new-password"]:nth-of-type(2)',
-    ]
-
-    for (const selector of confirmNewPasswordSelectors) {
-      try {
-        const input = await this.page.$(selector)
-        if (input) {
-          await input.click({ clickCount: 3 })
-          await input.type("", { delay: 50 })
-          await input.type(this.config.levelinfPassword, { delay: 150 })
-          logger.success(`Filled confirm new password field: ${selector}`)
-          break
-        }
-      } catch (e) {
-        continue
-      }
+    const confirmPasswordInput =
+      (await this.page.$("#registerForm_confirmPassword")) || (await this.page.$('input[placeholder*="Confirm"]'))
+    if (confirmPasswordInput) {
+      await confirmPasswordInput.click({ clickCount: 3 })
+      await confirmPasswordInput.type(this.config.levelinfPassword, { delay: 150 })
+      logger.success("Filled confirm password field")
     }
 
-    if (!newPasswordFilled) {
-      logger.warn("Could not fill new password fields")
-    }
-
-    // Wait for password validation
     const validationDelay = this.proxyManager?.getCurrentProxy() ? 6000 : 4000
     logger.info(`Waiting ${validationDelay / 1000}s for password validation...`)
     await delay(validationDelay)
 
-    try {
-      const successElements = await this.page.$$(".infinite-form-item-has-success")
-      const errorElements = await this.page.$$(".infinite-form-item-has-error")
-      logger.info(`Found ${successElements.length} success indicators, ${errorElements.length} error indicators`)
-    } catch (e) {
-      logger.warn("Could not check validation status")
-    }
-
-    await delay(2000)
-
-    return newPasswordFilled
+    return true
   }
 
   async clickDoneButton(): Promise<boolean> {
-    const doneSelectors = [
-      'button[name="confirm"][type="submit"]',
-      'button.infinite-btn-primary:contains("Done")',
-      'button:contains("Done")',
-      'button[type="submit"]:contains("Done")',
-      '.infinite-btn-primary[type="submit"]',
-    ]
+    logger.info("Looking for Done button...")
 
-    for (const selector of doneSelectors) {
-      try {
-        const button = await this.page.$(selector)
-        if (button) {
-          const isDisabled = await this.page.evaluate(
-            (el) => (el as any).disabled || (el as any).hasAttribute("disabled"),
-            button,
-          )
-          const buttonText = await this.page.evaluate((el) => (el as any).textContent?.trim(), button)
+    const clicked = await this.clickButtonByText("Done", ["get code", "send code", "continue"])
 
-          logger.debug(`Found button: ${selector} - Text: "${buttonText}" - Disabled: ${isDisabled}`)
-
-          if (!isDisabled && buttonText?.includes("Done")) {
-            try {
-              await button.click()
-              logger.success(`Done button clicked (method 1): ${selector}`)
-              return true
-            } catch (e1) {
-              try {
-                await this.page.evaluate((btn) => (btn as any).click(), button)
-                logger.success(`Done button clicked (method 2 - JS): ${selector}`)
-                return true
-              } catch (e2) {
-                try {
-                  const box = await button.boundingBox()
-                  if (box) {
-                    await this.page.mouse.click(box.x + box.width / 2, box.y + box.height / 2)
-                    logger.success(`Done button clicked (method 3 - mouse): ${selector}`)
-                    return true
-                  }
-                } catch (e3) {
-                  logger.error(`All click methods failed for: ${selector}`)
-                }
-              }
-            }
-          } else {
-            logger.warn(`Button not suitable: ${selector} - Text: "${buttonText}" - Disabled: ${isDisabled}`)
-          }
-        }
-      } catch (e) {
-        logger.warn(`Could not process button: ${selector} - Error: ${e}`)
-        continue
-      }
+    if (!clicked) {
+      logger.warn("Could not find Done button")
+      return false
     }
 
-    logger.warn("Could not find or click Done button. Taking final screenshot...")
-    await this.page.screenshot({ path: "final-registration-error.png", fullPage: true })
-    logger.info("Final screenshot saved as final-registration-error.png")
-    return false
+    return true
   }
 }
 

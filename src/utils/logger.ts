@@ -181,16 +181,21 @@ export let logger = new Logger({
   level: LogLevel.INFO,
   enableFileLogging: false,
   logFilePath: "logs/bot.log",
-  enableColors: true
+  enableColors: true,
 })
 
-export function initializeLogger(config: { debugMode: boolean, enableFileLogging: boolean, logFilePath: string, enableLogColors: boolean }) {
+export function initializeLogger(config: {
+  debugMode: boolean
+  enableFileLogging: boolean
+  logFilePath: string
+  enableLogColors: boolean
+}) {
   const logLevel = config.debugMode ? LogLevel.DEBUG : LogLevel.INFO
   logger = new Logger({
     level: logLevel,
     enableFileLogging: config.enableFileLogging,
     logFilePath: config.logFilePath,
-    enableColors: config.enableLogColors
+    enableColors: config.enableLogColors,
   })
 }
 

@@ -66,91 +66,47 @@ export class RegistrationHandler {
   }
 
   async fillEmailInput(): Promise<boolean> {
-    const emailSelectors = [
-      'input[type="email"]',
-      'input[name="email"]',
-      'input[placeholder*="email" i]',
-      'input[placeholder*="mail" i]',
-    ]
+    const emailSelector = "#registerForm_account"
 
-    for (const selector of emailSelectors) {
-      try {
-        const element = await this.page.$(selector)
-        if (element) {
-          logger.info(`Found email input: ${selector}`)
-          await element.type(this.currentEmail, { delay: 100 })
-          return true
-        }
-      } catch (e) {
-        continue
+    try {
+      const element = await this.page.$(emailSelector)
+      if (element) {
+        logger.info(`Found email input: ${emailSelector}`)
+        await element.type(this.currentEmail, { delay: 100 })
+        return true
       }
+    } catch (e) {
+      logger.debug(`Email selector ${emailSelector} failed: ${e}`)
     }
 
-    logger.warn("Email input not found, checking for other login methods...")
-    const loginButtons = await this.page.$$('button, a, [role="button"]')
-    logger.info(`Found ${loginButtons.length} potential buttons/links`)
-    await this.page.screenshot({ path: "debug-screenshot.png", fullPage: true })
+    logger.debug("Email input not found")
     return false
   }
 
   async fillPasswordInput(): Promise<boolean> {
-    const loginPasswordSelectors = [
-      'input[type="password"]',
-      'input[name="password"]',
-      'input[placeholder*="password" i]',
-      'input[placeholder*="pass" i]',
-    ]
-
-    for (const selector of loginPasswordSelectors) {
-      try {
-        const element = await this.page.$(selector)
-        if (element) {
-          logger.info(`Found password input: ${selector}`)
-          await element.type(this.config.levelinfPassword, { delay: 100 })
-          return true
-        }
-      } catch (e) {
-        continue
+    try {
+      const element = await this.page.$('input[type="password"]')
+      if (element) {
+        await element.type(this.config.levelinfPassword, { delay: 100 })
+        return true
       }
+    } catch (e) {
+      logger.debug(`Password input failed: ${e}`)
     }
     return false
   }
 
   async clickSubmitButton(): Promise<boolean> {
-    const submitSelectors = [
-      "#pop2LoginBtn",
-      'a.pop_btn3.btnA[id="pop2LoginBtn"]',
-      'button[type="submit"]',
-      'button:contains("Login")',
-      'button:contains("Register")',
-      'button:contains("Sign")',
-      'input[type="submit"]',
-      ".login-btn",
-      ".register-btn",
-      ".submit-btn",
-      'a[href="javascript:;"][class*="btn"]',
-    ]
-
-    for (const selector of submitSelectors) {
-      try {
-        const element = await this.page.$(selector)
-        if (element) {
-          logger.success(`Found login button: ${selector}`)
-          await element.click()
-          logger.info("Login button clicked, waiting for registration form...")
-          await this.proxyAwareDelay(1000)
-
-          try {
-            await this.page.screenshot({ path: "after-login-click.png", fullPage: true })
-          } catch (e) {
-            logger.warn("Could not save screenshot after login click")
-          }
-
-          return true
-        }
-      } catch (e) {
-        continue
+    try {
+      const element = await this.page.$("#pop2LoginBtn")
+      if (element) {
+        await element.click()
+        logger.info("Login button clicked, waiting for registration form...")
+        await this.proxyAwareDelay(1000)
+        return true
       }
+    } catch (e) {
+      logger.debug(`Login button click failed: ${e}`)
     }
 
     logger.warn("Login button not found automatically, waiting for manual interaction...")
@@ -158,30 +114,18 @@ export class RegistrationHandler {
   }
 
   async clickRegisterForFreeButton(): Promise<boolean> {
-    const registerSelectors = [
-      ".login-goRegister__button",
-      "button.login-goRegister__button",
-      'button:contains("Register for free")',
-      'button:contains("Register")',
-      '[class*="goRegister"]',
-    ]
-
-    for (const selector of registerSelectors) {
-      try {
-        const element = await this.page.$(selector)
-        if (element) {
-          logger.success(`Found register button: ${selector}`)
-          await element.click()
-          logger.info("Register for free button clicked!")
-          return true
-        }
-      } catch (e) {
-        continue
+    try {
+      const element = await this.page.$(".login-goRegister__button")
+      if (element) {
+        await element.click()
+        logger.info("Register for free button clicked!")
+        return true
       }
+    } catch (e) {
+      logger.debug(`Register button click failed: ${e}`)
     }
 
-    logger.warn("Register button not found, taking screenshot for debugging...")
-    await this.page.screenshot({ path: "register-form-debug.png", fullPage: true })
+    logger.warn("Register button not found")
     return false
   }
 
@@ -221,11 +165,6 @@ export class RegistrationHandler {
 
     if (!formReady) {
       logger.error("Registration form failed to load after all attempts")
-      try {
-        await this.page.screenshot({ path: "registration-form-failed.png", fullPage: true })
-      } catch (e) {
-        logger.warn("Could not save screenshot")
-      }
     }
 
     return formReady
@@ -233,60 +172,36 @@ export class RegistrationHandler {
 
   async fillRegistrationEmail(): Promise<boolean> {
     logger.info("Filling email address...")
-    await this.page.waitForSelector("#registerForm_account", { timeout: 5000 })
 
-    await this.page.evaluate(() => {
-      const emailInput = document.getElementById("registerForm_account") as any
-      if (emailInput) {
-        emailInput.value = ""
-        emailInput.focus()
-      }
-    })
+    const emailSelector = "#registerForm_account"
+    const element = await this.page.$(emailSelector)
 
-    await this.page.keyboard.type(this.currentEmail, { delay: 120 })
+    if (element) {
+      // Clear field and type email using element methods (more reliable)
+      await element.click({ clickCount: 3 }) // Select all
+      await element.type("", { delay: 50 }) // Clear
+      await this.proxyAwareDelay(100)
+      await element.type(this.currentEmail, { delay: 100 }) // Type email
 
-    const filledEmail = await this.page.$eval("#registerForm_account", (el) => (el as any).value)
-    if (filledEmail === this.currentEmail) {
-      logger.success("Email address filled successfully")
-      return true
-    } else {
-      logger.warn(`Email filling may have failed - expected: ${this.currentEmail}, got: ${filledEmail}`)
-      await this.page.evaluate((email) => {
-        const emailInput = document.getElementById("registerForm_account") as any
-        if (emailInput) {
-          emailInput.value = email
-          emailInput.dispatchEvent(new Event("input", { bubbles: true }))
-          emailInput.dispatchEvent(new Event("change", { bubbles: true }))
-        }
-      }, this.currentEmail)
+      logger.success(`Email filled: ${this.currentEmail}`)
       return true
     }
+
+    logger.debug("Email input not found")
+    return false
   }
 
   async clickRegistrationSubmit(): Promise<boolean> {
-    const registerSubmitSelectors = [
-      'button[type="submit"]',
-      'button:contains("Register")',
-      'button:contains("Sign up")',
-      'button:contains("Create")',
-      ".infinite-btn-primary",
-      'form button[type="submit"]',
-    ]
-
-    for (const selector of registerSubmitSelectors) {
-      try {
-        const element = await this.page.$(selector)
-        if (element) {
-          logger.success(`Found registration submit button: ${selector}`)
-          await element.click()
-          logger.info("Registration form submitted!")
-          await this.proxyAwareDelay(1500)
-          await this.proxyAwareDelay(3000)
-          return true
-        }
-      } catch (e) {
-        continue
+    try {
+      const element = await this.page.$('button[type="submit"]')
+      if (element) {
+        await element.click()
+        logger.info("Registration form submitted!")
+        await this.proxyAwareDelay(2500)
+        return true
       }
+    } catch (e) {
+      logger.debug(`Registration submit failed: ${e}`)
     }
     return false
   }
