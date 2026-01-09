@@ -70,7 +70,7 @@ export const defaultConfig: Config = {
   /** BOT SETTINGS */
   headless: false, // <= Set to true for production
   levelinfBaseUrl: "https://act.playcfl.com/act/a20251031rlr/index.html?code=",
-  referralCode: "abbqzbq", // <= Or set REFERRAL_CODE in .env
+  referralCode: "raosui", // <= Or set REFERRAL_CODE in .env
   navigationTimeout: 60000,
 
   /** CONTINUOUS MODE SETTINGS */
@@ -78,4 +78,5 @@ export const defaultConfig: Config = {
   maxContinuousSessions: 50, // <= Maximum sessions before stopping (0 = unlimited)
   inactivityTimeout: 300000, // <= Stop if no activity for 5 minutes
 }
+
 
