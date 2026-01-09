@@ -11,7 +11,7 @@ export const defaultConfig: Config = {
   levelinfPassword: "TempPass123!", // <= Or set LEVELINF_PASSWORD in .env
 
   /** PROXY SETTINGS */
-  useProxy: 5, // <= 0=No proxy, 1=HTTP file, 2=HTTPS file, 3=SOCKS4, 4=SOCKS5, 5=Stable mode
+  useProxy: 4, // <= 0=No proxy, 1=HTTP file, 2=HTTPS file, 3=SOCKS4, 4=SOCKS5, 5=Stable mode
   proxyFile: "proxy.txt",
 
   /** SOCKS PROXY SOURCES */
@@ -78,5 +78,6 @@ export const defaultConfig: Config = {
   maxContinuousSessions: 50, // <= Maximum sessions before stopping (0 = unlimited)
   inactivityTimeout: 300000, // <= Stop if no activity for 5 minutes
 }
+
 
 
